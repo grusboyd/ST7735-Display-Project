@@ -1,4 +1,10 @@
 /*
+ * NOTE: This project is under active development and is not yet fully functional.
+ * Some features and interfaces may be incomplete or unstable. Use for testing
+ * and development only. Report issues or questions in the repository.
+ */
+
+/*
  * ST7735 Bitmap Display Receiver - DueLCD01 Configuration
  * Arduino Due program to receive bitmap data from Raspberry Pi via serial
  * and display on ST7735 LCD (160x128 pixels)
