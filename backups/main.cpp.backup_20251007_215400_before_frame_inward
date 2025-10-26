@@ -24,11 +24,17 @@
 #include <Adafruit_ST7735.h>
 #include <SPI.h>
 
-// ST7735 pin definitions - DueLCD01 configuration
-#define TFT_CS     7      // Chip Select
-#define TFT_DC     10     // Data/Command select
-#define TFT_RST    8      // Reset
-#define TFT_BL     9      // Backlight control
+// Display 1 pin definitions (Bitmap Display)
+#define TFT1_CS     7      // Chip Select
+#define TFT1_DC     10     // Data/Command select
+#define TFT1_RST    8      // Reset
+#define TFT1_BL     9      // Backlight control
+
+// Display 2 pin definitions (Clock Display)
+#define TFT2_CS     29     // Chip Select
+#define TFT2_DC     31     // Data/Command select
+#define TFT2_RST    33     // Reset
+#define TFT2_BL     35     // Backlight control
 
 // Display dimensions (based on calibration findings)
 #define DISPLAY_WIDTH  160
@@ -38,8 +44,9 @@
 #define USABLE_WIDTH   158   // Calibrated usable width
 #define USABLE_HEIGHT  126   // Calibrated usable height
 
-// Create ST7735 instance
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+// Create ST7735 instances
+Adafruit_ST7735 tft1 = Adafruit_ST7735(TFT1_CS, TFT1_DC, TFT1_RST);  // Display 1 - Bitmap
+Adafruit_ST7735 tft2 = Adafruit_ST7735(TFT2_CS, TFT2_DC, TFT2_RST);  // Display 2 - Clock
 
 // Bitmap reception state
 enum BitmapState {
@@ -72,73 +79,94 @@ void processSerialData();
 void checkTimeout();
 
 void setup() {
-  // Initialize serial communication via Native USB port (no DTR reset)
-  SerialUSB.begin(115200);
-  // Note: Don't wait for SerialUSB connection - let display initialize immediately
+  // Initialize serial communication
+  Serial.begin(115200);
+  while (!Serial) {
+    ; // Wait for serial port to connect
+  }
   
-  // Initialize backlight control
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);  // Turn on backlight
+  // Enable Port C for extended pins (29, 31, 33, 35)
+  pmc_enable_periph_clk(ID_PIOC);
+  
+  // Initialize Display 1 backlight control
+  pinMode(TFT1_BL, OUTPUT);
+  digitalWrite(TFT1_BL, HIGH);  // Turn on backlight
+  
+  // Initialize Display 2 backlight control
+  pinMode(TFT2_BL, OUTPUT);
+  digitalWrite(TFT2_BL, HIGH);  // Turn on backlight
   
   // Initialize SPI
   SPI.begin();
   
-  // Initialize ST7735 display
-  tft.initR(INITR_BLACKTAB);   // Initialize ST7735S chip, black tab
-  
-  // Set to landscape mode with origin in upper left (rotation 1)
-  tft.setRotation(1);
-  
-  // Clear screen and show waiting display
-  tft.fillScreen(ST77XX_BLACK);
+  // Initialize Display 1 (Bitmap Display) - Landscape mode
+  tft1.initR(INITR_BLACKTAB);   // Initialize ST7735S chip, black tab
+  tft1.setRotation(1);          // Landscape mode
+  tft1.fillScreen(ST77XX_BLACK); // Explicit black fill for clean initialization
   drawWaitingDisplay();
   
-  SerialUSB.println("Arduino Due ST7735 Bitmap Display - DueLCD01");
-  SerialUSB.println("Calibrated for usable area: " + String(USABLE_WIDTH) + "x" + String(USABLE_HEIGHT) + " at (" + String(USABLE_ORIGIN_X) + "," + String(USABLE_ORIGIN_Y) + ")");
-  SerialUSB.println("Ready to receive bitmap data");
-  SerialUSB.println("Waiting for connection...");
+  // Initialize Display 2 (Clock Display) - Portrait mode with frame
+  tft2.initR(INITR_BLACKTAB);   // Initialize ST7735S chip, black tab
+  tft2.setRotation(0);          // Portrait mode
+  tft2.fillScreen(ST77XX_BLACK); // Explicit black fill for clean initialization
+  
+  // Draw frame moved 2 pixels right and 1 pixel down with thicker right and bottom
+  tft2.drawRect(2, 1, 128, 160, ST77XX_WHITE);
+  tft2.drawRect(3, 2, 126, 158, ST77XX_WHITE);
+  
+  // Add extra thickness to right and bottom edges (1 pixel thicker)
+  tft2.drawLine(130, 1, 130, 161, ST77XX_WHITE);  // Right edge +1 pixel
+  tft2.drawLine(131, 2, 131, 160, ST77XX_WHITE);  // Right edge inner +1 pixel
+  tft2.drawLine(2, 161, 131, 161, ST77XX_WHITE);  // Bottom edge +1 pixel  
+  tft2.drawLine(3, 160, 130, 160, ST77XX_WHITE);  // Bottom edge inner +1 pixel
+  
+  Serial.println("Dual ST7735 Display System Initialized");
+  Serial.println("Display 1: Bitmap receiver (" + String(USABLE_WIDTH) + "x" + String(USABLE_HEIGHT) + " usable)");
+  Serial.println("Display 2: Frame and test pattern in portrait mode");
+  Serial.println("Ready to receive bitmap data");
+  Serial.println("Waiting for connection...");
   
   lastActivity = millis();
 }
 
 void drawWaitingDisplay() {
   // Clear screen
-  tft.fillScreen(ST77XX_BLACK);
+  tft1.fillScreen(ST77XX_BLACK);
   
   // Draw white frame using calibrated usable area
-  tft.drawRect(USABLE_ORIGIN_X, USABLE_ORIGIN_Y, USABLE_WIDTH, USABLE_HEIGHT, ST77XX_WHITE);
+  tft1.drawRect(USABLE_ORIGIN_X, USABLE_ORIGIN_Y, USABLE_WIDTH, USABLE_HEIGHT, ST77XX_WHITE);
   
   // Draw line from origin to usable center
   int centerX = USABLE_ORIGIN_X + USABLE_WIDTH / 2;
   int centerY = USABLE_ORIGIN_Y + USABLE_HEIGHT / 2;
   
   // Draw diagonal line from actual origin (0,0) to usable center
-  tft.drawLine(0, 0, centerX, centerY, ST77XX_YELLOW);
+  tft1.drawLine(0, 0, centerX, centerY, ST77XX_YELLOW);
   
   // Mark origin with white pixels
-  tft.drawPixel(0, 0, ST77XX_WHITE);
-  tft.drawPixel(1, 0, ST77XX_WHITE);
-  tft.drawPixel(0, 1, ST77XX_WHITE);
+  tft1.drawPixel(0, 0, ST77XX_WHITE);
+  tft1.drawPixel(1, 0, ST77XX_WHITE);
+  tft1.drawPixel(0, 1, ST77XX_WHITE);
   
   // Mark usable center with red cross
-  tft.drawPixel(centerX, centerY, ST77XX_RED);
-  tft.drawPixel(centerX-1, centerY, ST77XX_RED);
-  tft.drawPixel(centerX+1, centerY, ST77XX_RED);
-  tft.drawPixel(centerX, centerY-1, ST77XX_RED);
-  tft.drawPixel(centerX, centerY+1, ST77XX_RED);
+  tft1.drawPixel(centerX, centerY, ST77XX_RED);
+  tft1.drawPixel(centerX-1, centerY, ST77XX_RED);
+  tft1.drawPixel(centerX+1, centerY, ST77XX_RED);
+  tft1.drawPixel(centerX, centerY-1, ST77XX_RED);
+  tft1.drawPixel(centerX, centerY+1, ST77XX_RED);
 }
 
 void displayError(const String& errorMsg) {
-  SerialUSB.println("ERROR: " + errorMsg);
+  Serial.println("ERROR: " + errorMsg);
   
   // Display error on screen
-  tft.fillScreen(ST77XX_RED);
-  tft.setTextColor(ST77XX_WHITE);
-  tft.setTextSize(1);
-  tft.setCursor(5, 10);
-  tft.println("ERROR:");
-  tft.setCursor(5, 25);
-  tft.println(errorMsg);
+  tft1.fillScreen(ST77XX_RED);
+  tft1.setTextColor(ST77XX_WHITE);
+  tft1.setTextSize(1);
+  tft1.setCursor(5, 10);
+  tft1.println("ERROR:");
+  tft1.setCursor(5, 25);
+  tft1.println(errorMsg);
   
   // Reset state
   currentState = WAITING_FOR_START;
@@ -151,11 +179,11 @@ void displayError(const String& errorMsg) {
 }
 
 void displaySuccess() {
-  SerialUSB.println("COMPLETE");
-  SerialUSB.println("Bitmap display completed successfully!");
+  Serial.println("COMPLETE");
+  Serial.println("Bitmap display completed successfully!");
   
   // Redraw the white frame around the usable area after bitmap display
-  tft.drawRect(USABLE_ORIGIN_X, USABLE_ORIGIN_Y, USABLE_WIDTH, USABLE_HEIGHT, ST77XX_WHITE);
+  tft1.drawRect(USABLE_ORIGIN_X, USABLE_ORIGIN_Y, USABLE_WIDTH, USABLE_HEIGHT, ST77XX_WHITE);
 }
 
 bool validateDimensions(int width, int height) {
@@ -182,7 +210,7 @@ bool validateDimensions(int width, int height) {
     return false;
   }
   
-  SerialUSB.println("Dimensions validated: " + String(width) + "x" + String(height));
+  Serial.println("Dimensions validated: " + String(width) + "x" + String(height));
   return true;
 }
 
@@ -191,8 +219,8 @@ bool isWithinBounds(int x, int y) {
           x < USABLE_ORIGIN_X + USABLE_WIDTH && 
           y >= USABLE_ORIGIN_Y && 
           y < USABLE_ORIGIN_Y + USABLE_HEIGHT &&
-          x >= 0 && x < tft.width() &&
-          y >= 0 && y < tft.height());
+          x >= 0 && x < tft1.width() &&
+          y >= 0 && y < tft1.height());
 }
 
 bool calculateOffsets(int bmpWidth, int bmpHeight, int& offsetX, int& offsetY) {
@@ -213,37 +241,37 @@ bool calculateOffsets(int bmpWidth, int bmpHeight, int& offsetX, int& offsetY) {
   
   if (!isWithinBounds(minX, minY) || !isWithinBounds(maxX, maxY)) {
     displayError("Calculated bitmap position exceeds bounds");
-    SerialUSB.println("Bitmap bounds: (" + String(minX) + "," + String(minY) + ") to (" + String(maxX) + "," + String(maxY) + ")");
-    SerialUSB.println("Usable bounds: (" + String(USABLE_ORIGIN_X) + "," + String(USABLE_ORIGIN_Y) + ") to (" + String(USABLE_ORIGIN_X + USABLE_WIDTH - 1) + "," + String(USABLE_ORIGIN_Y + USABLE_HEIGHT - 1) + ")");
+    Serial.println("Bitmap bounds: (" + String(minX) + "," + String(minY) + ") to (" + String(maxX) + "," + String(maxY) + ")");
+    Serial.println("Usable bounds: (" + String(USABLE_ORIGIN_X) + "," + String(USABLE_ORIGIN_Y) + ") to (" + String(USABLE_ORIGIN_X + USABLE_WIDTH - 1) + "," + String(USABLE_ORIGIN_Y + USABLE_HEIGHT - 1) + ")");
     return false;
   }
   
-  SerialUSB.println("Usable center: (" + String(usableCenterX) + ", " + String(usableCenterY) + ")");
-  SerialUSB.println("Bitmap center: (" + String(bitmapCenterX) + ", " + String(bitmapCenterY) + ")");
-  SerialUSB.println("Centering at offset: (" + String(offsetX) + ", " + String(offsetY) + ")");
-  SerialUSB.println("Bitmap will occupy: (" + String(minX) + "," + String(minY) + ") to (" + String(maxX) + "," + String(maxY) + ")");
+  Serial.println("Usable center: (" + String(usableCenterX) + ", " + String(usableCenterY) + ")");
+  Serial.println("Bitmap center: (" + String(bitmapCenterX) + ", " + String(bitmapCenterY) + ")");
+  Serial.println("Centering at offset: (" + String(offsetX) + ", " + String(offsetY) + ")");
+  Serial.println("Bitmap will occupy: (" + String(minX) + "," + String(minY) + ") to (" + String(maxX) + "," + String(maxY) + ")");
   
   return true;
 }
 
 void processSerialData() {
-  if (SerialUSB.available()) {
+  if (Serial.available()) {
     lastActivity = millis();
     
     switch (currentState) {
       case WAITING_FOR_START: {
-        String command = SerialUSB.readStringUntil('\n');
+        String command = Serial.readStringUntil('\n');
         command.trim();
-
+        
         if (command == "BMPStart") {
-          SerialUSB.println("Start marker received");
+          Serial.println("Start marker received");
           currentState = WAITING_FOR_SIZE;
         }
         break;
       }
       
       case WAITING_FOR_SIZE: {
-        String sizeCommand = SerialUSB.readStringUntil('\n');
+        String sizeCommand = Serial.readStringUntil('\n');
         sizeCommand.trim();
         
         if (sizeCommand.startsWith("SIZE:")) {
@@ -256,11 +284,12 @@ void processSerialData() {
             if (validateDimensions(bitmapWidth, bitmapHeight) && 
                 calculateOffsets(bitmapWidth, bitmapHeight, offsetX, offsetY)) {
               
-              SerialUSB.println("READY");
-              SerialUSB.println("Receiving bitmap: " + String(bitmapWidth) + "x" + String(bitmapHeight));
+              Serial.println("READY");
+              Serial.println("Receiving bitmap: " + String(bitmapWidth) + "x" + String(bitmapHeight));
               
-              // Clear display
-              tft.fillScreen(ST77XX_BLACK);
+              // Clear display and redraw frame for centering reference
+              tft1.fillScreen(ST77XX_BLACK);
+              tft1.drawRect(USABLE_ORIGIN_X, USABLE_ORIGIN_Y, USABLE_WIDTH, USABLE_HEIGHT, ST77XX_WHITE);
               
               // Initialize bitmap position with bounds checking
               currentRow = 0;
@@ -269,7 +298,7 @@ void processSerialData() {
               // Verify we're ready to receive data
               if (bitmapWidth > 0 && bitmapHeight > 0) {
                 currentState = RECEIVING_DATA;
-                SerialUSB.println("Ready to receive " + String(bitmapWidth * bitmapHeight) + " pixels");
+                Serial.println("Ready to receive " + String(bitmapWidth * bitmapHeight) + " pixels");
               } else {
                 displayError("Invalid bitmap dimensions after validation");
               }
@@ -283,7 +312,7 @@ void processSerialData() {
       
       case RECEIVING_DATA: {
         // Read pixel data (2 bytes per pixel for RGB565)
-        while (SerialUSB.available() >= 2 && currentState == RECEIVING_DATA) {
+        while (Serial.available() >= 2 && currentState == RECEIVING_DATA) {
           if (currentRow >= bitmapHeight) {
             // All pixels received, wait for end marker
             currentState = WAITING_FOR_END;
@@ -291,8 +320,8 @@ void processSerialData() {
           }
           
           // Read RGB565 pixel data (big-endian)
-          uint8_t highByte = SerialUSB.read();
-          uint8_t lowByte = SerialUSB.read();
+          uint8_t highByte = Serial.read();
+          uint8_t lowByte = Serial.read();
           uint16_t pixelColor = (highByte << 8) | lowByte;
           
           // Calculate pixel position with bounds checking
@@ -301,13 +330,13 @@ void processSerialData() {
           
           // Comprehensive bounds checking before drawing
           if (isWithinBounds(displayX, displayY)) {
-            tft.drawPixel(displayX, displayY, pixelColor);
+            tft1.drawPixel(displayX, displayY, pixelColor);
           } else {
             // Log out-of-bounds attempts (but don't error - might be expected)
             static unsigned long lastWarning = 0;
             unsigned long now = millis();
             if (now - lastWarning > 1000) { // Limit warnings to once per second
-              SerialUSB.println("Warning: Pixel at (" + String(displayX) + "," + String(displayY) + ") out of bounds");
+              Serial.println("Warning: Pixel at (" + String(displayX) + "," + String(displayY) + ") out of bounds");
               lastWarning = now;
             }
           }
@@ -320,7 +349,7 @@ void processSerialData() {
             
             // Bounds check for row overflow
             if (currentRow > bitmapHeight) {
-              SerialUSB.println("Error: Row overflow detected");
+              Serial.println("Error: Row overflow detected");
               currentState = WAITING_FOR_END;
               break;
             }
@@ -328,13 +357,13 @@ void processSerialData() {
             // Progress indication every 10 rows
             if (currentRow % 10 == 0 && currentRow < bitmapHeight) {
               float progress = (float)currentRow / bitmapHeight * 100;
-              SerialUSB.println("Progress: " + String(progress, 1) + "% (Row " + String(currentRow) + "/" + String(bitmapHeight) + ")");
+              Serial.println("Progress: " + String(progress, 1) + "% (Row " + String(currentRow) + "/" + String(bitmapHeight) + ")");
             }
           }
           
           // Additional safety check for column bounds
           if (currentCol < 0 || currentCol > bitmapWidth) {
-            SerialUSB.println("Error: Column bounds violation");
+            Serial.println("Error: Column bounds violation");
             currentCol = 0;
           }
         }
@@ -342,7 +371,7 @@ void processSerialData() {
       }
       
       case WAITING_FOR_END: {
-        String endCommand = SerialUSB.readStringUntil('\n');
+        String endCommand = Serial.readStringUntil('\n');
         endCommand.trim();
         
         if (endCommand == "BMPEnd") {
@@ -361,7 +390,7 @@ void processSerialData() {
         currentCol = 0;
         offsetX = 0;
         offsetY = 0;
-        SerialUSB.println("Ready for next bitmap");
+        Serial.println("Ready for next bitmap");
         break;
       }
     }
@@ -371,7 +400,7 @@ void processSerialData() {
 void checkTimeout() {
   if (currentState != WAITING_FOR_START && currentState != BITMAP_COMPLETE && (millis() - lastActivity > TIMEOUT_MS)) {
     displayError("Timeout waiting for data");
-    SerialUSB.println("Timeout - resetting to wait for new bitmap");
+    Serial.println("Timeout - resetting to wait for new bitmap");
   }
 }
 

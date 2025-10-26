@@ -1,0 +1,476 @@
+/*
+ * ST7735 Dual Display System - Arduino Due Implementation
+ * 
+ * REFACTORED VERSION - Modular design for dual display support
+ * 
+ * Display 1 - Bitmap Display (DueLCD01):
+ * - Purpose: Receive and display bitmap data via serial
+ * - Resolution: 160x128 (usable: 158x126 at offset 1,2)
+ * - Wiring: CS=7, DC=10, RST=8, BL=9
+ * - Shared SPI: MOSI=11, SCK=13
+ * 
+ * Display 2 - Clock Display (DueLCD02) [Future]:
+ * - Purpose: Real-time clock with analog face
+ * - Resolution: 160x128 (portrait mode)
+ * - Wiring: CS=29, DC=31, RST=35, BL=37
+ * - Shared SPI: MOSI=11, SCK=13
+ * 
+ * Features:
+ * - Modular display management
+ * - Optimized bitmap transmission
+ * - SPI isolation for dual displays
+ * - Robust error handling
+ * - Performance optimizations
+ */
+
+// Core Arduino and display libraries
+#include <Arduino.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <SPI.h>
+#include <math.h>  // For future clock calculations
+
+// ============================================================================
+// HARDWARE CONFIGURATION
+// ============================================================================
+
+// Display 1 - Bitmap Display (DueLCD01)
+#define TFT1_CS    7      // Chip Select
+#define TFT1_DC    10     // Data/Command select
+#define TFT1_RST   8      // Reset
+#define TFT1_BL    9      // Backlight control
+
+// Display 2 - Clock Display (DueLCD02) - Future expansion
+#define TFT2_CS    29     // Chip Select (Arduino Due extended pins)
+#define TFT2_DC    31     // Data/Command select
+#define TFT2_RST   35     // Reset
+#define TFT2_BL    37     // Backlight control
+
+// Shared SPI pins (both displays)
+#define SPI_MOSI   11     // SDA/MOSI
+#define SPI_SCK    13     // SCK
+
+// Display specifications
+#define DISPLAY_WIDTH  160
+#define DISPLAY_HEIGHT 128
+
+// Display 1 calibrated usable area (landscape mode)
+#define DISPLAY1_USABLE_X      1    // Calibrated origin X
+#define DISPLAY1_USABLE_Y      2    // Calibrated origin Y  
+#define DISPLAY1_USABLE_WIDTH  158  // Calibrated width
+#define DISPLAY1_USABLE_HEIGHT 126  // Calibrated height
+
+// Performance and timing constants
+#define BITMAP_TIMEOUT_MS      15000  // 15 second timeout
+#define SERIAL_BAUD_RATE       115200
+#define PROGRESS_UPDATE_ROWS   10     // Progress update frequency
+
+// ============================================================================
+// DISPLAY INSTANCES
+// ============================================================================
+
+// Display 1 - Bitmap Display (landscape orientation)
+Adafruit_ST7735 display1 = Adafruit_ST7735(TFT1_CS, TFT1_DC, TFT1_RST);
+
+// Display 2 - Future expansion for clock display
+// Adafruit_ST7735 display2 = Adafruit_ST7735(TFT2_CS, TFT2_DC, TFT2_RST);
+
+// ============================================================================
+// STATE MANAGEMENT
+// ============================================================================
+
+// Bitmap reception states
+enum BitmapState {
+  WAITING_FOR_START,
+  WAITING_FOR_SIZE, 
+  RECEIVING_DATA,
+  WAITING_FOR_END,
+  BITMAP_COMPLETE
+};
+
+// System configuration
+struct SystemConfig {
+  bool display2Enabled = false;  // Feature flag for second display
+  bool debugOutput = true;       // Enable/disable debug messages
+  bool performanceMode = false;  // High-speed processing mode
+};
+
+// Bitmap processing state
+struct BitmapState_t {
+  BitmapState currentState = WAITING_FOR_START;
+  int width = 0;
+  int height = 0;
+  int currentRow = 0;
+  int currentCol = 0;
+  int offsetX = 0;  // Centering offset X
+  int offsetY = 0;  // Centering offset Y
+  unsigned long lastActivity = 0;
+  bool isActive = false;
+};
+
+// Global instances
+SystemConfig config;
+BitmapState_t bitmapState;
+
+// ============================================================================
+// FUNCTION PROTOTYPES
+// ============================================================================
+
+// Display management
+void initializeDisplay1();
+void drawWaitingDisplay();
+void displayError(const String& errorMsg);
+void displaySuccess();
+
+// Bitmap processing
+bool validateDimensions(int width, int height);
+bool calculateOffsets(int bmpWidth, int bmpHeight, int& offsetX, int& offsetY);
+bool isWithinBounds(int x, int y);
+void resetBitmapState();
+
+// Serial communication
+void processSerialData();
+void handleStartCommand();
+void handleSizeCommand();
+void processBitmapData();
+void handleEndCommand();
+
+// System utilities
+void checkTimeout();
+void debugPrint(const String& message);
+
+// ============================================================================
+// SETUP AND INITIALIZATION
+// ============================================================================
+
+void setup() {
+  // Initialize serial communication
+  Serial.begin(SERIAL_BAUD_RATE);
+  while (!Serial) {
+    delay(10); // Wait for serial port to connect
+  }
+  
+  // Initialize SPI bus (shared by both displays)
+  SPI.begin();
+  
+  // Initialize Display 1
+  initializeDisplay1();
+  
+  // Initialize system state
+  resetBitmapState();
+  
+  // Display startup information
+  debugPrint("=== ST7735 Dual Display System ====");
+  debugPrint("Display 1 - Bitmap Display (DueLCD01):");
+  debugPrint("  Usable area: " + String(DISPLAY1_USABLE_WIDTH) + "x" + String(DISPLAY1_USABLE_HEIGHT));
+  debugPrint("  Origin: (" + String(DISPLAY1_USABLE_X) + "," + String(DISPLAY1_USABLE_Y) + ")");
+  if (config.display2Enabled) {
+    debugPrint("Display 2 - Clock Display: ENABLED");
+  } else {
+    debugPrint("Display 2 - Clock Display: DISABLED");
+  }
+  debugPrint("Ready to receive bitmap data");
+  debugPrint("Waiting for connection...");
+}
+
+void initializeDisplay1() {
+  // Setup backlight control
+  pinMode(TFT1_BL, OUTPUT);
+  digitalWrite(TFT1_BL, HIGH);  // Turn on backlight
+  
+  // Initialize display
+  display1.initR(INITR_BLACKTAB);   // Initialize ST7735S chip, black tab
+  display1.setRotation(1);          // Landscape mode
+  
+  // Clear screen and show waiting display
+  display1.fillScreen(ST77XX_BLACK);
+  drawWaitingDisplay();
+}
+
+void drawWaitingDisplay() {
+  // Clear screen
+  display1.fillScreen(ST77XX_BLACK);
+  
+  // Draw white frame using calibrated usable area
+  display1.drawRect(DISPLAY1_USABLE_X, DISPLAY1_USABLE_Y, DISPLAY1_USABLE_WIDTH, DISPLAY1_USABLE_HEIGHT, ST77XX_WHITE);
+  
+  // Draw line from origin to usable center
+  int centerX = DISPLAY1_USABLE_X + DISPLAY1_USABLE_WIDTH / 2;
+  int centerY = DISPLAY1_USABLE_Y + DISPLAY1_USABLE_HEIGHT / 2;
+  
+  // Draw diagonal line from actual origin (0,0) to usable center
+  display1.drawLine(0, 0, centerX, centerY, ST77XX_YELLOW);
+  
+  // Mark origin with white pixels
+  display1.drawPixel(0, 0, ST77XX_WHITE);
+  display1.drawPixel(1, 0, ST77XX_WHITE);
+  display1.drawPixel(0, 1, ST77XX_WHITE);
+  
+  // Mark usable center with red cross
+  display1.drawPixel(centerX, centerY, ST77XX_RED);
+  display1.drawPixel(centerX-1, centerY, ST77XX_RED);
+  display1.drawPixel(centerX+1, centerY, ST77XX_RED);
+  display1.drawPixel(centerX, centerY-1, ST77XX_RED);
+  display1.drawPixel(centerX, centerY+1, ST77XX_RED);
+}
+
+void displayError(const String& errorMsg) {
+  debugPrint("ERROR: " + errorMsg);
+  
+  // Display error on screen
+  display1.fillScreen(ST77XX_RED);
+  display1.setTextColor(ST77XX_WHITE);
+  display1.setTextSize(1);
+  display1.setCursor(5, 10);
+  display1.println("ERROR:");
+  display1.setCursor(5, 25);
+  display1.println(errorMsg);
+  
+  // Reset bitmap state
+  resetBitmapState();
+}
+
+void displaySuccess() {
+  debugPrint("COMPLETE");
+  debugPrint("Bitmap display completed successfully!");
+  
+  // Redraw the white frame around the usable area after bitmap display
+  display1.drawRect(DISPLAY1_USABLE_X, DISPLAY1_USABLE_Y, DISPLAY1_USABLE_WIDTH, DISPLAY1_USABLE_HEIGHT, ST77XX_WHITE);
+}
+
+bool validateDimensions(int width, int height) {
+  // Check for negative or zero dimensions
+  if (width <= 0 || height <= 0) {
+    displayError("Invalid dimensions: width=" + String(width) + ", height=" + String(height));
+    return false;
+  }
+  
+  // Check for unreasonably large dimensions (prevent overflow)
+  if (width > 1000 || height > 1000) {
+    displayError("Dimensions too large: width=" + String(width) + ", height=" + String(height));
+    return false;
+  }
+  
+  // Check if bitmap fits within usable area
+  if (width > DISPLAY1_USABLE_WIDTH) {
+    displayError("Width " + String(width) + " exceeds usable width " + String(DISPLAY1_USABLE_WIDTH));
+    return false;
+  }
+  
+  if (height > DISPLAY1_USABLE_HEIGHT) {
+    displayError("Height " + String(height) + " exceeds usable height " + String(DISPLAY1_USABLE_HEIGHT));
+    return false;
+  }
+  
+  Serial.println("Dimensions validated: " + String(width) + "x" + String(height));
+  return true;
+}
+
+bool isWithinBounds(int x, int y) {
+  return (x >= DISPLAY1_USABLE_X && 
+          x < DISPLAY1_USABLE_X + DISPLAY1_USABLE_WIDTH && 
+          y >= DISPLAY1_USABLE_Y && 
+          y < DISPLAY1_USABLE_Y + DISPLAY1_USABLE_HEIGHT &&
+          x >= 0 && x < display1.width() &&
+          y >= 0 && y < display1.height());
+}
+
+bool calculateOffsets(int bmpWidth, int bmpHeight, int& offsetX, int& offsetY) {
+  // Calculate centering offsets within usable area
+  int usableCenterX = DISPLAY1_USABLE_X + DISPLAY1_USABLE_WIDTH / 2;
+  int usableCenterY = DISPLAY1_USABLE_Y + DISPLAY1_USABLE_HEIGHT / 2;
+  int bitmapCenterX = bmpWidth / 2;
+  int bitmapCenterY = bmpHeight / 2;
+  
+  offsetX = usableCenterX - bitmapCenterX;
+  offsetY = usableCenterY - bitmapCenterY;
+  
+  // Verify the bitmap will fit with calculated offsets
+  int minX = offsetX;
+  int maxX = offsetX + bmpWidth - 1;
+  int minY = offsetY;
+  int maxY = offsetY + bmpHeight - 1;
+  
+  if (!isWithinBounds(minX, minY) || !isWithinBounds(maxX, maxY)) {
+    displayError("Calculated bitmap position exceeds bounds");
+    Serial.println("Bitmap bounds: (" + String(minX) + "," + String(minY) + ") to (" + String(maxX) + "," + String(maxY) + ")");
+    debugPrint("Usable bounds: (" + String(DISPLAY1_USABLE_X) + "," + String(DISPLAY1_USABLE_Y) + ") to (" + String(DISPLAY1_USABLE_X + DISPLAY1_USABLE_WIDTH - 1) + "," + String(DISPLAY1_USABLE_Y + DISPLAY1_USABLE_HEIGHT - 1) + ")");
+    return false;
+  }
+  
+  Serial.println("Usable center: (" + String(usableCenterX) + ", " + String(usableCenterY) + ")");
+  Serial.println("Bitmap center: (" + String(bitmapCenterX) + ", " + String(bitmapCenterY) + ")");
+  Serial.println("Centering at offset: (" + String(offsetX) + ", " + String(offsetY) + ")");
+  Serial.println("Bitmap will occupy: (" + String(minX) + "," + String(minY) + ") to (" + String(maxX) + "," + String(maxY) + ")");
+  
+  return true;
+}
+
+void processSerialData() {
+  if (Serial.available()) {
+    bitmapState.lastActivity = millis();
+    
+    switch (bitmapState.currentState) {
+      case WAITING_FOR_START: {
+        handleStartCommand();
+        break;
+      }
+      
+      case WAITING_FOR_SIZE: {
+        handleSizeCommand();
+        break;
+      }
+      
+      case RECEIVING_DATA: {
+        processBitmapData();
+        break;
+      }
+      
+      case WAITING_FOR_END: {
+        handleEndCommand();
+        break;
+      }
+      
+      case BITMAP_COMPLETE: {
+        resetBitmapState();
+        debugPrint("Ready for next bitmap");
+        break;
+      }
+    }
+  }
+}
+
+void handleStartCommand() {
+  String command = Serial.readStringUntil('\n');
+  command.trim();
+  
+  if (command == "BMPStart") {
+    debugPrint("Start marker received");
+    bitmapState.currentState = WAITING_FOR_SIZE;
+    bitmapState.isActive = true;
+  }
+}
+
+void handleSizeCommand() {
+  String sizeCommand = Serial.readStringUntil('\n');
+  sizeCommand.trim();
+  
+  if (sizeCommand.startsWith("SIZE:")) {
+    // Parse dimensions: SIZE:width,height
+    int commaIndex = sizeCommand.indexOf(',');
+    if (commaIndex > 0) {
+      bitmapState.width = sizeCommand.substring(5, commaIndex).toInt();
+      bitmapState.height = sizeCommand.substring(commaIndex + 1).toInt();
+      
+      if (validateDimensions(bitmapState.width, bitmapState.height) && 
+          calculateOffsets(bitmapState.width, bitmapState.height, bitmapState.offsetX, bitmapState.offsetY)) {
+        
+        Serial.println("READY");
+        debugPrint("Receiving bitmap: " + String(bitmapState.width) + "x" + String(bitmapState.height));
+        
+        // Clear display
+        display1.fillScreen(ST77XX_BLACK);
+        
+        // Initialize bitmap position
+        bitmapState.currentRow = 0;
+        bitmapState.currentCol = 0;
+        bitmapState.currentState = RECEIVING_DATA;
+        
+        debugPrint("Ready to receive " + String(bitmapState.width * bitmapState.height) + " pixels");
+      }
+    } else {
+      displayError("Invalid size format");
+    }
+  }
+}
+
+void processBitmapData() {
+  // Process all available pixel data
+  while (Serial.available() >= 2 && bitmapState.currentState == RECEIVING_DATA) {
+    if (bitmapState.currentRow >= bitmapState.height) {
+      bitmapState.currentState = WAITING_FOR_END;
+      break;
+    }
+    
+    // Read RGB565 pixel data (big-endian)
+    uint8_t highByte = Serial.read();
+    uint8_t lowByte = Serial.read();
+    uint16_t pixelColor = (highByte << 8) | lowByte;
+    
+    // Calculate pixel position
+    int displayX = bitmapState.currentCol + bitmapState.offsetX;
+    int displayY = bitmapState.currentRow + bitmapState.offsetY;
+    
+    // Draw pixel if within bounds
+    if (isWithinBounds(displayX, displayY)) {
+      display1.drawPixel(displayX, displayY, pixelColor);
+    }
+    
+    // Advance to next pixel
+    bitmapState.currentCol++;
+    if (bitmapState.currentCol >= bitmapState.width) {
+      bitmapState.currentCol = 0;
+      bitmapState.currentRow++;
+      
+      // Progress indication
+      if (bitmapState.currentRow % PROGRESS_UPDATE_ROWS == 0 && bitmapState.currentRow < bitmapState.height) {
+        float progress = (float)bitmapState.currentRow / bitmapState.height * 100;
+        debugPrint("Progress: " + String(progress, 1) + "% (Row " + String(bitmapState.currentRow) + "/" + String(bitmapState.height) + ")");
+      }
+    }
+  }
+}
+
+void handleEndCommand() {
+  String endCommand = Serial.readStringUntil('\n');
+  endCommand.trim();
+  
+  if (endCommand == "BMPEnd") {
+    bitmapState.currentState = BITMAP_COMPLETE;
+    displaySuccess();
+  }
+}
+
+void checkTimeout() {
+  if (bitmapState.isActive && 
+      bitmapState.currentState != WAITING_FOR_START && 
+      bitmapState.currentState != BITMAP_COMPLETE && 
+      (millis() - bitmapState.lastActivity > BITMAP_TIMEOUT_MS)) {
+    displayError("Timeout waiting for data");
+    debugPrint("Timeout - resetting to wait for new bitmap");
+  }
+}
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+void resetBitmapState() {
+  bitmapState.currentState = WAITING_FOR_START;
+  bitmapState.width = 0;
+  bitmapState.height = 0;
+  bitmapState.currentRow = 0;
+  bitmapState.currentCol = 0;
+  bitmapState.offsetX = 0;
+  bitmapState.offsetY = 0;
+  bitmapState.lastActivity = millis();
+  bitmapState.isActive = false;
+}
+
+void debugPrint(const String& message) {
+  if (config.debugOutput) {
+    Serial.println(message);
+  }
+}
+
+// ============================================================================
+// MAIN LOOP
+// ============================================================================
+
+void loop() {
+  processSerialData();
+  checkTimeout();
+  
+  // Small delay to prevent overwhelming the processor
+  delay(1);
+}

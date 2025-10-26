@@ -9,6 +9,19 @@
 				"run"
 			],
 			"group": "build"
+		},
+		{
+			"label": "PlatformIO Build Verbose",
+			"type": "shell",
+			"command": "platformio",
+			"args": [
+				"run",
+				"--verbose"
+			],
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
 		}
 	]
 }
