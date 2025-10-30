@@ -23,6 +23,12 @@ from pathlib import Path
 import serial
 from PIL import Image, ImageOps
 import struct
+from st7735_tools import (
+    get_native_usb_port, 
+    get_programming_port,
+    get_preferred_port,
+    print_arduino_due_info
+)
 
 # Display configuration - using calibrated usable area
 DISPLAY_WIDTH = 158   # Usable width (calibrated)
@@ -31,14 +37,27 @@ SERIAL_BAUDRATE = 115200
 TIMEOUT_SECONDS = 10
 
 class BitmapSender:
-    def __init__(self, serial_port='/dev/ttyACM2', baudrate=SERIAL_BAUDRATE):
+    def __init__(self, serial_port=None, baudrate=SERIAL_BAUDRATE, prefer_native=True):
         """
         Initialize the bitmap sender
         
         Args:
-            serial_port (str): Serial port path (e.g., '/dev/ttyACM0')
+            serial_port (str): Serial port path (e.g., '/dev/ttyACM1'). If None, auto-detects
             baudrate (int): Serial communication baud rate
+            prefer_native (bool): If True, prefer Native USB over Programming port
         """
+        # Auto-detect port if not specified
+        if serial_port is None:
+            serial_port = get_preferred_port(prefer_native=prefer_native)
+            if serial_port:
+                port_type = "Native USB" if prefer_native else "Programming"
+                print(f"Auto-detected Arduino Due {port_type} port: {serial_port}")
+                if not prefer_native:
+                    print("Warning: Using Programming port - Arduino will reset on connection")
+            else:
+                print("Warning: Could not auto-detect Arduino Due port")
+                print("Please specify the serial port manually")
+        
         self.serial_port = serial_port
         self.baudrate = baudrate
         self.connection = None
@@ -258,8 +277,11 @@ class BitmapSender:
             self.connection.write(size_command.encode('utf-8'))
             self.connection.flush()
             
-            # Wait for READY response
-            response = self.wait_for_response("READY", timeout=5)
+            # Give Arduino more time to process and respond
+            time.sleep(0.5)
+            
+            # Wait for READY response (increased timeout)
+            response = self.wait_for_response("READY", timeout=10)
             if not response or "READY" not in response:
                 print("Error: Arduino did not confirm ready state")
                 return False
@@ -375,22 +397,24 @@ Examples:
     )
     
     parser.add_argument('image_file', nargs='?', help='Path to image file')
-    parser.add_argument('serial_port', nargs='?', default='/dev/ttyACM2', 
-                       help='Serial port (default: /dev/ttyACM2 - Native USB port)')
+    parser.add_argument('serial_port', nargs='?', default=None, 
+                       help='Serial port (default: auto-detect Native USB port)')
     parser.add_argument('--test-pattern', action='store_true',
                        help='Send a test pattern instead of an image')
     parser.add_argument('--list-ports', action='store_true',
-                       help='List available serial ports')
+                       help='List available serial ports and Arduino Due detection')
+    parser.add_argument('--detect-arduino', action='store_true',
+                       help='Show Arduino Due port detection information')
+    parser.add_argument('--use-programming-port', action='store_true',
+                       help='Use Programming port instead of Native USB (will cause reset)')
     
     args = parser.parse_args()
     
-    # List available ports
-    if args.list_ports:
-        import serial.tools.list_ports
-        ports = serial.tools.list_ports.comports()
-        print("Available serial ports:")
-        for port in ports:
-            print(f"  {port.device} - {port.description}")
+    # Show Arduino Due detection info
+    if args.detect_arduino or args.list_ports:
+        print_arduino_due_info()
+        if args.list_ports:
+            print()  # Extra newline for readability
         return 0
     
     # Validate arguments
@@ -403,8 +427,18 @@ Examples:
         print(f"Error: Image file '{args.image_file}' not found")
         return 1
     
-    # Create bitmap sender
-    sender = BitmapSender(args.serial_port)
+    # Determine port preference
+    prefer_native = not args.use_programming_port
+    
+    # Create bitmap sender (auto-detects port if not specified)
+    sender = BitmapSender(args.serial_port, prefer_native=prefer_native)
+    
+    # Check if we have a valid port
+    if sender.serial_port is None:
+        print("\nError: No serial port specified and auto-detection failed")
+        print("Please specify a port manually or check Arduino Due connection")
+        print("\nRun with --detect-arduino to see port detection details")
+        return 1
     
     try:
         # Connect to Arduino

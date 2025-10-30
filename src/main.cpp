@@ -65,7 +65,7 @@ int currentCol = 0;
 int offsetX = 0;  // X offset to center bitmap
 int offsetY = 0;  // Y offset to center bitmap
 unsigned long lastActivity = 0;
-const unsigned long TIMEOUT_MS = 15000; // 15 second timeout for data reception
+const unsigned long TIMEOUT_MS = 25000; // 25 second timeout for data reception
 
 // Function prototypes
 void drawWaitingDisplay();
