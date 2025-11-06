@@ -1,0 +1,34 @@
+# ST7735 Display Configuration Template
+# Format: TOML v1.0.0
+# Copy this file and rename to match your device (e.g., DueLCD03.config)
+
+[device]
+name = "DueLCDXX"  # Unique identifier for this display
+manufacturer = "Manufacturer Name"
+model = "Model Number"
+published_resolution = [160, 128]  # [width, height] in pixels (from datasheet)
+
+[pinout]
+# Arduino Due pin assignments
+rst = 8   # Reset pin
+dc = 10   # Data/Command pin
+cs = 7    # Chip Select pin
+bl = 9    # Backlight control pin
+
+[calibration]
+orientation = "landscape"  # Options: landscape, portrait, reverse_landscape, reverse_portrait
+
+# Usable area bounds (0-indexed, inclusive)
+# Determined through calibration - actual visible/usable pixels
+left = 0     # Leftmost usable pixel column
+right = 159  # Rightmost usable pixel column
+top = 0      # Topmost usable pixel row
+bottom = 127 # Bottommost usable pixel row
+
+# Calculated center point of usable area
+center = [80, 64]  # [x, y] - center of calibrated usable area
+
+# Optional: Additional calibration data
+# [calibration.advanced]
+# frame_thickness = 2
+# diagonal_line_enabled = false

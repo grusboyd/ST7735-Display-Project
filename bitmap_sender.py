@@ -24,24 +24,43 @@ import serial
 from PIL import Image, ImageOps
 import struct
 
-# Display configuration - using calibrated usable area
+# Import config loader from st7735_tools
+try:
+    from st7735_tools.config_loader import load_display_config, find_config_files, get_config_by_device_name
+except ImportError:
+    print("Error: st7735_tools module not found. Make sure config_loader.py exists.")
+    sys.exit(1)
+
+# Default display configuration (fallback if no config specified)
 DISPLAY_WIDTH = 158   # Usable width (calibrated)
 DISPLAY_HEIGHT = 126  # Usable height (calibrated)
 SERIAL_BAUDRATE = 115200
 TIMEOUT_SECONDS = 10
 
 class BitmapSender:
-    def __init__(self, serial_port='/dev/ttyACM2', baudrate=SERIAL_BAUDRATE):
+    def __init__(self, serial_port='/dev/ttyACM2', baudrate=SERIAL_BAUDRATE, display_config=None):
         """
         Initialize the bitmap sender
         
         Args:
             serial_port (str): Serial port path (e.g., '/dev/ttyACM0')
             baudrate (int): Serial communication baud rate
+            display_config: DisplayConfig object (optional, uses defaults if None)
         """
         self.serial_port = serial_port
         self.baudrate = baudrate
         self.connection = None
+        self.display_config = display_config
+        
+        # Set display dimensions from config or use defaults
+        if display_config:
+            self.display_width = display_config.usable_width
+            self.display_height = display_config.usable_height
+            print(f"Using config: {display_config.name} ({display_config.usable_width}x{display_config.usable_height})")
+        else:
+            self.display_width = DISPLAY_WIDTH
+            self.display_height = DISPLAY_HEIGHT
+            print(f"Using default dimensions: {self.display_width}x{self.display_height}")
         
     def connect(self):
         """Establish serial connection to Arduino Due"""
@@ -157,8 +176,8 @@ class BitmapSender:
                 # No rotation needed - display rotation will handle orientation
                 img_width, img_height = img.size
                 
-                scale_x = DISPLAY_WIDTH / img_width
-                scale_y = DISPLAY_HEIGHT / img_height
+                scale_x = self.display_width / img_width
+                scale_y = self.display_height / img_height
                 
                 # Try to fill at least one dimension completely
                 scale_max = max(scale_x, scale_y)
@@ -169,7 +188,7 @@ class BitmapSender:
                 test_height = int(img_height * scale_max)
                 
                 # If max scale fits within display bounds, use it; otherwise fall back to min scale
-                if test_width <= DISPLAY_WIDTH and test_height <= DISPLAY_HEIGHT:
+                if test_width <= self.display_width and test_height <= self.display_height:
                     scale = scale_max
                     print(f"Using max scale to fill dimension: {scale:.3f}")
                 else:
@@ -192,13 +211,13 @@ class BitmapSender:
                 new_width, new_height = img_resized.size
                 
                 # Final bounds check and crop if necessary
-                if new_width > DISPLAY_WIDTH or new_height > DISPLAY_HEIGHT:
-                    print(f"Cropping to fit display: {DISPLAY_WIDTH}x{DISPLAY_HEIGHT}")
+                if new_width > self.display_width or new_height > self.display_height:
+                    print(f"Cropping to fit display: {self.display_width}x{self.display_height}")
                     # Calculate crop box to center the image
-                    left = max(0, (new_width - DISPLAY_WIDTH) // 2)
-                    top = max(0, (new_height - DISPLAY_HEIGHT) // 2)
-                    right = left + min(new_width, DISPLAY_WIDTH)
-                    bottom = top + min(new_height, DISPLAY_HEIGHT)
+                    left = max(0, (new_width - self.display_width) // 2)
+                    top = max(0, (new_height - self.display_height) // 2)
+                    right = left + min(new_width, self.display_width)
+                    bottom = top + min(new_height, self.display_height)
                     
                     img_resized = img_resized.crop((left, top, right, bottom))
                     new_width, new_height = img_resized.size
@@ -370,7 +389,10 @@ def main():
 Examples:
   python3 bitmap_sender.py image.jpg
   python3 bitmap_sender.py photo.png /dev/ttyACM0
+  python3 bitmap_sender.py --device DueLCD01 image.jpg
+  python3 bitmap_sender.py --config DueLCD02.config photo.png
   python3 bitmap_sender.py --test-pattern /dev/ttyUSB0
+  python3 bitmap_sender.py --list-configs
         """
     )
     
@@ -381,8 +403,29 @@ Examples:
                        help='Send a test pattern instead of an image')
     parser.add_argument('--list-ports', action='store_true',
                        help='List available serial ports')
+    parser.add_argument('--device', '-d', type=str,
+                       help='Device name (e.g., DueLCD01). Auto-loads config file.')
+    parser.add_argument('--config', '-c', type=str,
+                       help='Path to device config file (e.g., DueLCD01.config)')
+    parser.add_argument('--list-configs', action='store_true',
+                       help='List available device configurations')
     
     args = parser.parse_args()
+    
+    # List available configs
+    if args.list_configs:
+        print("Searching for display configuration files...")
+        configs = find_config_files()
+        if configs:
+            print(f"Found {len(configs)} device configuration(s):")
+            for device_name, config_path in configs.items():
+                config = load_display_config(str(config_path))
+                print(f"  {device_name}: {config_path}")
+                print(f"    Resolution: {config.usable_width}x{config.usable_height} ({config.orientation})")
+                print(f"    Pins: CS={config.pins['cs']}, DC={config.pins['dc']}, RST={config.pins['rst']}")
+        else:
+            print("No configuration files found.")
+        return 0
     
     # List available ports
     if args.list_ports:
@@ -392,6 +435,25 @@ Examples:
         for port in ports:
             print(f"  {port.device} - {port.description}")
         return 0
+    
+    # Load display configuration
+    display_config = None
+    if args.config:
+        # Load specific config file
+        try:
+            print(f"Loading config from: {args.config}")
+            display_config = load_display_config(args.config)
+        except Exception as e:
+            print(f"Error loading config file: {e}")
+            return 1
+    elif args.device:
+        # Load config by device name
+        print(f"Looking for device: {args.device}")
+        display_config = get_config_by_device_name(args.device)
+        if not display_config:
+            print(f"Error: No configuration found for device '{args.device}'")
+            print("Use --list-configs to see available devices")
+            return 1
     
     # Validate arguments
     if not args.test_pattern and not args.image_file:
@@ -403,8 +465,8 @@ Examples:
         print(f"Error: Image file '{args.image_file}' not found")
         return 1
     
-    # Create bitmap sender
-    sender = BitmapSender(args.serial_port)
+    # Create bitmap sender with optional display config
+    sender = BitmapSender(args.serial_port, display_config=display_config)
     
     try:
         # Connect to Arduino

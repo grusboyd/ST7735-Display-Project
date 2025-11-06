@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2025-11-06
+
+### Added - Modular Configuration System
+- **TOML Configuration Files**: Device-specific config files for display management
+  - `DueLCD01.config` - Landscape display configuration (158×126 usable area)
+  - `DueLCD02.config` - Portrait display configuration (126×158 usable area)
+  - `display_config_template.toml` - Template for new display configurations
+  - Standardized format with device info, pinout, and calibration sections
+  
+- **Python Configuration Module** (`st7735_tools/config_loader.py`):
+  - `DisplayConfig` dataclass with computed properties
+  - `load_display_config()` - Parse TOML config files
+  - `find_config_files()` - Auto-discover available displays
+  - `get_config_by_device_name()` - Load config by device name
+  - `print_config_info()` - Human-readable config display
+
+- **C++ Header Generator** (`generate_config_header.py`):
+  - Auto-generates `include/DisplayConfig.h` from config files
+  - Compile-time configuration with `#define` constants
+  - Converts orientation strings to rotation values
+  - Device selection via `--device` or `--config` flags
+
+- **Enhanced Calibration Tool** (`tools/cal_lcd.cpp`):
+  - `bounds L,R,T,B` command to set usable area
+  - `export` command generates complete TOML config output
+  - Copy/paste workflow from serial monitor to config file
+  - Automatic center point calculation
+  - Pin configuration included in export
+
+- **Enhanced bitmap_sender.py**:
+  - `--device` flag for device name selection
+  - `--config` flag for explicit config file
+  - `--list-configs` shows all available displays
+  - Auto-loads dimensions and calibration from config
+  - Backwards compatible with hardcoded defaults
+
+### Changed
+- Configuration Files: Converted from ad-hoc format to TOML v1.0.0 standard
+- File Naming: Standardized to `<DeviceName>.config` convention
+- Display Dimensions: Now loaded from config instead of hardcoded constants
+- Pin Definitions: Externalized to config files (Arduino) or auto-loaded (Python)
+
+### Documentation
+- **CONFIG_SYSTEM.md**: Complete configuration system guide
+  - Python and C++ API documentation
+  - Workflow for calibrating new displays
+  - Usage examples for all tools
+- **tools/CALIBRATION_GUIDE.md**: Quick reference for calibration commands
+  - Command list with examples
+  - Complete calibration session walkthrough
+  - Post-calibration workflow
+
+### Technical Details
+- TOML parsing via Python `toml` module (already installed)
+- Config files tracked in version control
+- Single source of truth for device specifications
+- Cross-language support (Python + C++)
+- VS Code syntax highlighting via "Even Better TOML" extension
+- File associations: `*.config` → TOML language mode
+
+### Benefits
+- **Modular**: Add displays without editing code
+- **Maintainable**: Clear separation of configuration and implementation
+- **Version Controlled**: Device specs tracked in git
+- **Type-Safe**: Validated TOML structure
+- **Documented**: Inline comments in config files
+- **Extensible**: Easy to add new display parameters
+
+### Workflow
+1. Calibrate display using `tools/cal_lcd.cpp`
+2. Use `export` command to generate config
+3. Save output as `<DeviceName>.config`
+4. Python: `python3 bitmap_sender.py --device <DeviceName> image.jpg`
+5. C++: `python3 generate_config_header.py --device <DeviceName>`
+6. Build and flash with auto-generated header
+
+### Files Added
+- `st7735_tools/config_loader.py` (212 lines)
+- `generate_config_header.py` (136 lines)
+- `DueLCD01.config` (TOML format)
+- `DueLCD02.config` (TOML format)
+- `display_config_template.toml` (comprehensive template)
+- `CONFIG_SYSTEM.md` (system documentation)
+- `tools/CALIBRATION_GUIDE.md` (quick reference)
+
+### Files Modified
+- `bitmap_sender.py` - Added config loading and device selection
+- `tools/cal_lcd.cpp` - Added bounds and export commands
+- VS Code `settings.json` - Added `*.config` → TOML association
+
 ## [1.3.0] - 2025-10-08
 
 ### Investigation

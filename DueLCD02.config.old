@@ -1,0 +1,17 @@
+## DueLCD02 configuration
+## Manufacturer: Jessinie 
+## Model: n/a 
+Published resolution = 128 W x 160 H 
+## Pinout [function] = [Due I/O pin number]
+Res = 33
+DC = 31
+CS = 29
+BL = 35
+
+## Calibrated frame offsets
+Orientation = Portrait
+Left = 0
+Right = 0
+Top = 0
+Bottom = 0
+Center = 64, 80
