@@ -8,12 +8,15 @@ Requirements:
 - Python 3.6+
 - pyserial: pip install pyserial
 - Pillow (PIL): pip install Pillow
+- tkinter: (usually pre-installed with Python)
 
 Usage:
     python3 bitmap_sender.py <image_file> [serial_port]
+    python3 bitmap_sender.py --gui              # Open file picker GUI
     
 Example:
     python3 bitmap_sender.py image.jpg /dev/ttyACM1
+    python3 bitmap_sender.py --gui --device DueLCD01
 """
 
 import sys
@@ -23,6 +26,8 @@ from pathlib import Path
 import serial
 from PIL import Image, ImageOps
 import struct
+import os
+import json
 
 # Import config loader from st7735_tools
 try:
@@ -37,8 +42,12 @@ DISPLAY_HEIGHT = 126  # Usable height (calibrated)
 SERIAL_BAUDRATE = 115200
 TIMEOUT_SECONDS = 10
 
+# GUI settings file
+SETTINGS_FILE = Path.home() / '.st7735_bitmap_sender.json'
+DEFAULT_IMAGE_DIR = Path.home() / 'Pictures'
+
 class BitmapSender:
-    def __init__(self, serial_port='/dev/ttyACM2', baudrate=SERIAL_BAUDRATE, display_config=None):
+    def __init__(self, serial_port='/dev/ttyACM0', baudrate=SERIAL_BAUDRATE, display_config=None):
         """
         Initialize the bitmap sender
         
@@ -74,14 +83,20 @@ class BitmapSender:
             )
             
             # Wait for Arduino to initialize
+            # Arduino Due resets when Native USB serial port is opened
+            # Need to wait for bootloader + initialization
             print("Waiting for Arduino to initialize...")
-            time.sleep(2)
+            time.sleep(5)
             
             # Read any startup messages
+            print(f"Bytes available: {self.connection.in_waiting}")
             while self.connection.in_waiting > 0:
                 line = self.connection.readline().decode('utf-8', errors='ignore').strip()
                 if line:
                     print(f"Arduino: {line}")
+            
+            # Try to flush any remaining data
+            self.connection.reset_input_buffer()
             
             print("Connection established!")
             return True
@@ -266,6 +281,23 @@ class BitmapSender:
         try:
             print("\n=== Starting bitmap transmission ===")
             
+            # Step 0: Select target display (v3.0 protocol)
+            if self.display_config:
+                print(f"Selecting display: {self.display_config.name}...")
+                display_command = f"DISPLAY:{self.display_config.name}\n"
+                self.connection.write(display_command.encode('utf-8'))
+                self.connection.flush()
+                
+                # Wait for DISPLAY_READY response
+                response = self.wait_for_response("DISPLAY_READY", timeout=3)
+                if not response or "DISPLAY_READY" not in response:
+                    if response and "DISPLAY_ERROR" in response:
+                        print(f"Error: {response}")
+                    else:
+                        print("Error: Arduino did not confirm display selection")
+                    return False
+                print(f"✓ Display {self.display_config.name} selected")
+            
             # Step 1: Send start marker
             print("Sending start marker...")
             self.connection.write(b"BMPStart\n")
@@ -350,6 +382,20 @@ class BitmapSender:
                 pixel_data.append(struct.pack('>H', rgb565))
         
         try:
+            # Step 0: Select target display (v3.0 protocol)
+            if self.display_config:
+                print(f"Selecting display: {self.display_config.name}...")
+                display_command = f"DISPLAY:{self.display_config.name}\n"
+                self.connection.write(display_command.encode('utf-8'))
+                self.connection.flush()
+                
+                # Wait for DISPLAY_READY response
+                response = self.wait_for_response("DISPLAY_READY", timeout=3)
+                if not response or "DISPLAY_READY" not in response:
+                    print("Error: Arduino did not confirm display selection")
+                    return False
+                print(f"✓ Display {self.display_config.name} selected")
+            
             # Send start marker
             self.connection.write(b"BMPStart\n")
             self.connection.flush()
@@ -381,6 +427,93 @@ class BitmapSender:
             print(f"Error sending test pattern: {e}")
             return False
 
+def load_last_directory():
+    """Load the last used directory from settings file"""
+    try:
+        if SETTINGS_FILE.exists():
+            with open(SETTINGS_FILE, 'r') as f:
+                settings = json.load(f)
+                last_dir = settings.get('last_directory')
+                if last_dir and Path(last_dir).exists():
+                    return last_dir
+    except Exception:
+        pass
+    
+    # Default to Pictures directory if it exists
+    if DEFAULT_IMAGE_DIR.exists():
+        return str(DEFAULT_IMAGE_DIR)
+    
+    # Otherwise use home directory
+    return str(Path.home())
+
+def save_last_directory(directory):
+    """Save the last used directory to settings file"""
+    try:
+        settings = {}
+        if SETTINGS_FILE.exists():
+            with open(SETTINGS_FILE, 'r') as f:
+                settings = json.load(f)
+        
+        settings['last_directory'] = str(directory)
+        
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=2)
+    except Exception as e:
+        # Non-critical error, just print warning
+        print(f"Warning: Could not save last directory: {e}")
+
+def open_file_picker(title="Select Image File"):
+    """
+    Open a GUI file picker dialog
+    
+    Args:
+        title (str): Dialog window title
+        
+    Returns:
+        str: Selected file path, or None if cancelled
+    """
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        
+        # Create root window (hidden)
+        root = tk.Tk()
+        root.withdraw()
+        
+        # Get last used directory
+        initial_dir = load_last_directory()
+        
+        # Open file dialog
+        file_path = filedialog.askopenfilename(
+            title=title,
+            initialdir=initial_dir,
+            filetypes=[
+                ("Image files", "*.jpg *.jpeg *.png *.bmp *.gif"),
+                ("JPEG files", "*.jpg *.jpeg"),
+                ("PNG files", "*.png"),
+                ("BMP files", "*.bmp"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        # Clean up
+        root.destroy()
+        
+        if file_path:
+            # Save the directory for next time
+            save_last_directory(str(Path(file_path).parent))
+            return file_path
+        
+        return None
+        
+    except ImportError:
+        print("Error: tkinter not available. GUI file picker requires tkinter.")
+        print("Install with: sudo apt-get install python3-tk")
+        return None
+    except Exception as e:
+        print(f"Error opening file picker: {e}")
+        return None
+
 def main():
     parser = argparse.ArgumentParser(
         description="Send bitmap images to Arduino Due ST7735 display",
@@ -389,6 +522,8 @@ def main():
 Examples:
   python3 bitmap_sender.py image.jpg
   python3 bitmap_sender.py photo.png /dev/ttyACM0
+  python3 bitmap_sender.py --gui                       # Open file picker
+  python3 bitmap_sender.py --gui --device DueLCD01     # Pick file + use device config
   python3 bitmap_sender.py --device DueLCD01 image.jpg
   python3 bitmap_sender.py --config DueLCD02.config photo.png
   python3 bitmap_sender.py --test-pattern /dev/ttyUSB0
@@ -397,8 +532,10 @@ Examples:
     )
     
     parser.add_argument('image_file', nargs='?', help='Path to image file')
-    parser.add_argument('serial_port', nargs='?', default='/dev/ttyACM2', 
-                       help='Serial port (default: /dev/ttyACM2 - Native USB port)')
+    parser.add_argument('serial_port', nargs='?', default='/dev/ttyACM0', 
+                       help='Serial port (default: /dev/ttyACM0 - Arduino Due Native USB port)')
+    parser.add_argument('--gui', action='store_true',
+                       help='Open file picker GUI to select image')
     parser.add_argument('--test-pattern', action='store_true',
                        help='Send a test pattern instead of an image')
     parser.add_argument('--list-ports', action='store_true',
@@ -455,9 +592,23 @@ Examples:
             print("Use --list-configs to see available devices")
             return 1
     
+    # Handle GUI file picker
+    if args.gui:
+        try:
+            print("Opening file picker...")
+            selected_file = open_file_picker("Select Image to Send to ST7735 Display")
+            if not selected_file:
+                print("No file selected. Exiting.")
+                return 0
+            args.image_file = selected_file
+            print(f"Selected: {args.image_file}")
+        except KeyboardInterrupt:
+            print("\nFile selection cancelled by user.")
+            return 0
+    
     # Validate arguments
     if not args.test_pattern and not args.image_file:
-        print("Error: Please specify an image file or use --test-pattern")
+        print("Error: Please specify an image file, use --gui, or use --test-pattern")
         parser.print_help()
         return 1
     

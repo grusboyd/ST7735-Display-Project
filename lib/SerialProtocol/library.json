@@ -1,0 +1,39 @@
+{
+  "name": "SerialProtocol",
+  "version": "3.0.0",
+  "description": "Serial communication protocol handler for ST7735 bitmap transmission. Implements stateful protocol with display selection, size negotiation, pixel data streaming, and progress reporting.",
+  "keywords": [
+    "serial",
+    "protocol",
+    "bitmap",
+    "image transfer",
+    "RGB565",
+    "ST7735",
+    "Arduino Due"
+  ],
+  "authors": [
+    {
+      "name": "grusboyd",
+      "maintainer": true
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/grusboyd/ST7735-Display-Project.git"
+  },
+  "license": "MIT",
+  "frameworks": "arduino",
+  "platforms": "sam",
+  "dependencies": [
+    {
+      "name": "DisplayManager",
+      "version": "^3.0.0"
+    }
+  ],
+  "export": {
+    "include": [
+      "SerialProtocol.h",
+      "SerialProtocol.cpp"
+    ]
+  }
+}

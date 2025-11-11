@@ -45,12 +45,49 @@
 // Create ST7735 instance
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
+// Published display dimensions (from .config files)
+// These are the nominal display dimensions that manufacturers publish
+// NOTE: Standard ST7735 1.8" displays are 160x128 in landscape orientation
+// If calibrating a different size display, update these constants before compilation
+const int PUBLISHED_WIDTH = 160;
+const int PUBLISHED_HEIGHT = 128;
+
 // Calibration variables
 int currentRotation = 1;  // Default to landscape
 int usableOriginX = 0;
 int usableOriginY = 0;
 int usableWidth = 0;
 int usableHeight = 0;
+int frameThickness = 2;  // Frame thickness (1-5)
+
+// Mode selection (1-6, plus NO_MODE state)
+enum CalibrationMode {
+  MODE_NONE = -1,          // Not in any mode
+  MODE_EDGE_ADJUST = 0,    // Mode 1
+  MODE_FRAME_MOVE = 1,     // Mode 2
+  MODE_THICKNESS = 2,      // Mode 3
+  MODE_ROTATION = 3,       // Mode 4
+  MODE_SAVE_EXIT = 4,      // Mode 5
+  MODE_EXIT_NO_SAVE = 5    // Mode 6
+};
+CalibrationMode currentMode = MODE_NONE;  // Start with no mode active
+
+// Change tracking for save verification
+struct SavedState {
+  int rotation;
+  int usableOriginX;
+  int usableOriginY;
+  int usableWidth;
+  int usableHeight;
+  int frameThickness;
+};
+SavedState lastSavedState = {1, 0, 0, 0, 0, 2};
+bool hasUnsavedChanges = false;
+bool hasEverSaved = false;
+
+// Display configuration
+String currentDisplayName = "";  // Name of display being calibrated
+bool configExists = false;       // Whether a valid config exists
 
 // Function prototypes
 void showHelp();
@@ -66,9 +103,30 @@ void waitForKeypress();
 void exportConfig();
 void setUsableBounds(int left, int right, int top, int bottom);
 
+// New functions for arrow key control
+void handleArrowKey(char key);
+void setMode(int mode);
+void showModePrompt();
+void markModified();
+bool checkUnsavedChanges();
+void saveAndExit();
+void exitWithoutSaving();
+void adjustEdge(char direction);
+void moveFrame(char direction);
+void adjustThickness(char direction);
+void rotateDisplay(char direction);
+void redrawFrame();
+void initializeBoundsFromPublished();
+void handleEscapeKey();
+bool validateAndClampBounds();
+void selectOrCreateDisplay();
+void createNewDisplayConfig();
+String readSerialLine();
+void showStartupMenu();
+
 void setup() {
   // Initialize serial communication
-  Serial.begin(115200);
+  SerialUSB.begin(115200);
   while (!Serial) {
     ; // Wait for serial port to connect
   }
@@ -90,51 +148,109 @@ void setup() {
   // Clear screen only
   tft.fillScreen(ST77XX_BLACK);
   
-  // Show welcome message and options only
-  Serial.println();
-  Serial.println("========================================");
-  Serial.println("ST7735 Display Calibration Tool v1.0");
-  Serial.println("========================================");
-  Serial.println();
-  Serial.println("Connected! Ready for commands.");
-  Serial.println();
+  // Show welcome message
+  SerialUSB.println();
+  SerialUSB.println("========================================");
+  SerialUSB.println("ST7735 Display Calibration Tool v2.0");
+  SerialUSB.println("========================================");
+  SerialUSB.println();
+  
+  // Display selection / creation menu
+  selectOrCreateDisplay();
+  
+  // Initialize bounds from published dimensions
+  initializeBoundsFromPublished();
+  
+  // Initialize saved state
+  lastSavedState.usableOriginX = 0;
+  lastSavedState.usableOriginY = 0;
+  lastSavedState.usableWidth = 0;
+  lastSavedState.usableHeight = 0;
+  lastSavedState.rotation = currentRotation;
+  lastSavedState.frameThickness = frameThickness;
+  
+  // Show help
+  SerialUSB.println();
+  SerialUSB.println("Connected! Ready for calibration.");
+  SerialUSB.println();
   showHelp();
 }
 
 void showHelp() {
-  Serial.println("Available Commands:");
-  Serial.println("  rot0, rot1, rot2, rot3 - Set rotation (0=portrait, 1=landscape, 2=portrait-flipped, 3=landscape-flipped)");
-  Serial.println("  frame                  - Draw white frame at display edges (steps through insets)");
-  Serial.println("  clear                  - Clear screen to black");
-  Serial.println("  cross                  - Draw diagonal line from origin (0,0) to nominal center");
-  Serial.println("  test                   - Run complete calibration test (with keypress pauses)");
-  Serial.println("  center                 - Draw red cross at calculated usable center");
-  Serial.println("  bounds L,R,T,B         - Set usable bounds (e.g., 'bounds 1,158,2,127')");
-  Serial.println("  export                 - Export calibration as .config file (copy/paste to save)");
-  Serial.println("  info                   - Show current display information");
-  Serial.println("  help                   - Show this help");
-  Serial.println();
+  SerialUSB.println("========== Arrow Key Calibration Mode ==========");
+  SerialUSB.println();
+  SerialUSB.println("Display: " + currentDisplayName);
+  SerialUSB.println();
+  SerialUSB.println("QUICK START:");
+  SerialUSB.println("  Initial bounds loaded from published dimensions");
+  SerialUSB.println("  1. Type 'info' to see current settings");
+  SerialUSB.println("  2. Press '1' then use arrow keys to fine-tune");
+  SerialUSB.println("  3. Press '5' when done to save & export");
+  SerialUSB.println();
+  SerialUSB.println("MODE SELECTION (Press 1-6):");
+  SerialUSB.println("  1 - Adjust Frame Edges    (arrow keys expand/contract, ESC to exit mode)");
+  SerialUSB.println("  2 - Move Entire Frame     (arrow keys shift position, ESC to exit mode)");
+  SerialUSB.println("  3 - Adjust Thickness      (up/down = 1-5px, ESC to exit mode)");
+  SerialUSB.println("  4 - Rotate Display        (left/right = CCW/CW, ESC to exit mode)");
+  SerialUSB.println("  5 - Save & Exit           (export .config, ESC to cancel)");
+  SerialUSB.println("  6 - Exit Without Saving   (ESC to cancel)");
+  SerialUSB.println();
+  SerialUSB.println("ARROW KEYS:");
+  SerialUSB.println("  ↑ ↓ ← → - Adjust based on current mode");
+  SerialUSB.println();
+  SerialUSB.println("SPECIAL KEYS:");
+  SerialUSB.println("  ESC    - Exit current mode (1-4) or trigger save sequence (no mode)");
+  SerialUSB.println("  Ctrl-C - Quick save & exit");
+  SerialUSB.println();
+  SerialUSB.println("LEGACY TEXT COMMANDS:");
+  SerialUSB.println("  rot0-3, frame, clear, cross, test, center");
+  SerialUSB.println("  bounds L,R,T,B, export, info, help");
+  SerialUSB.println();
+  SerialUSB.println("================================================");
+  SerialUSB.println();
 }
 
 void showDisplayInfo() {
-  Serial.println("Current Display Information:");
-  Serial.println("  Rotation: " + String(currentRotation));
-  Serial.println("  Nominal Width: " + String(tft.width()));
-  Serial.println("  Nominal Height: " + String(tft.height()));
+  SerialUSB.println("Current Display Information:");
+  SerialUSB.println("  Rotation: " + String(currentRotation));
+  SerialUSB.println("  Nominal Width: " + String(tft.width()));
+  SerialUSB.println("  Nominal Height: " + String(tft.height()));
   if (usableWidth > 0) {
-    Serial.println("  Usable Origin: (" + String(usableOriginX) + ", " + String(usableOriginY) + ")");
-    Serial.println("  Usable Size: " + String(usableWidth) + " x " + String(usableHeight));
-    Serial.println("  Usable Center: (" + String(usableOriginX + usableWidth/2) + ", " + String(usableOriginY + usableHeight/2) + ")");
+    SerialUSB.println("  Usable Origin: (" + String(usableOriginX) + ", " + String(usableOriginY) + ")");
+    SerialUSB.println("  Usable Size: " + String(usableWidth) + " x " + String(usableHeight));
+  } else {
+    SerialUSB.println("  Usable bounds: Not yet set (use 'bounds' command)");
   }
-  Serial.println();
+  SerialUSB.println("  Frame Thickness: " + String(frameThickness) + "px");
+  
+  SerialUSB.print("  Current Mode: ");
+  switch(currentMode) {
+    case MODE_NONE: SerialUSB.println("None (press 1-6 to select)"); break;
+    case MODE_EDGE_ADJUST: SerialUSB.println("1 - Edge Adjust"); break;
+    case MODE_FRAME_MOVE: SerialUSB.println("2 - Frame Move"); break;
+    case MODE_THICKNESS: SerialUSB.println("3 - Thickness"); break;
+    case MODE_ROTATION: SerialUSB.println("4 - Rotation"); break;
+    case MODE_SAVE_EXIT: SerialUSB.println("5 - Save & Exit"); break;
+    case MODE_EXIT_NO_SAVE: SerialUSB.println("6 - Exit Without Save"); break;
+  }
+  
+  SerialUSB.print("  Changes Status: ");
+  if (hasUnsavedChanges) {
+    SerialUSB.println("UNSAVED");
+  } else if (hasEverSaved) {
+    SerialUSB.println("Saved");
+  } else {
+    SerialUSB.println("No changes");
+  }
+  SerialUSB.println();
 }
 
 void setRotation(int rotation) {
   if (rotation >= 0 && rotation <= 3) {
     currentRotation = rotation;
     tft.setRotation(rotation);
-    Serial.println("Rotation set to: " + String(rotation));
-    Serial.println("Display size: " + String(tft.width()) + " x " + String(tft.height()));
+    SerialUSB.println("Rotation set to: " + String(rotation));
+    SerialUSB.println("Display size: " + String(tft.width()) + " x " + String(tft.height()));
     
     // Reset usable area when rotation changes
     usableOriginX = 0;
@@ -142,43 +258,76 @@ void setRotation(int rotation) {
     usableWidth = 0;
     usableHeight = 0;
     
-    Serial.println("Use 'cross' command to see origin-to-center line.");
+    SerialUSB.println("Use 'cross' command to see origin-to-center line.");
   } else {
-    Serial.println("Invalid rotation. Use 0-3.");
+    SerialUSB.println("Invalid rotation. Use 0-3.");
   }
 }
 
 void clearScreen() {
   tft.fillScreen(ST77XX_BLACK);
-  Serial.println("Screen cleared to black using fillScreen().");
+  SerialUSB.println("Screen cleared to black using fillScreen().");
 }
 
 void drawFrame() {
-  Serial.println("Frame test - stepping through insets. Press any key to continue between steps...");
+  // If usable bounds are set, draw frame at those bounds
+  if (usableWidth > 0 && usableHeight > 0) {
+    // Ensure bounds are within display limits
+    int maxX = tft.width();
+    int maxY = tft.height();
+    
+    // Clamp values to valid range
+    int clampedX = constrain(usableOriginX, 0, maxX - 1);
+    int clampedY = constrain(usableOriginY, 0, maxY - 1);
+    int clampedW = constrain(usableWidth, 1, maxX - clampedX);
+    int clampedH = constrain(usableHeight, 1, maxY - clampedY);
+    
+    // Draw frame with current thickness, ensuring it stays within bounds
+    int maxThickness = min(frameThickness, min(clampedW / 2, clampedH / 2));
+    for (int i = 0; i < maxThickness; i++) {
+      int rectW = clampedW - (2 * i);
+      int rectH = clampedH - (2 * i);
+      if (rectW > 0 && rectH > 0) {
+        tft.drawRect(
+          clampedX + i, 
+          clampedY + i, 
+          rectW, 
+          rectH, 
+          ST77XX_WHITE
+        );
+      }
+    }
+    SerialUSB.print("Frame drawn at usable bounds with thickness ");
+    SerialUSB.println(maxThickness);
+    return;
+  }
+  
+  // Legacy mode - step through insets
+  SerialUSB.println("Frame test - stepping through insets. Press any key to continue between steps...");
   
   // Step 1: Nominal frame
   clearScreen();
   tft.drawRect(0, 0, tft.width(), tft.height(), ST77XX_WHITE);
-  Serial.println("Step 1: White frame at nominal bounds (0,0) to (" + String(tft.width()-1) + "," + String(tft.height()-1) + ")");
-  Serial.println("Press any key to continue...");
+  SerialUSB.println("Step 1: White frame at nominal bounds (0,0) to (" + String(tft.width()-1) + "," + String(tft.height()-1) + ")");
+  SerialUSB.println("Press any key to continue...");
   waitForKeypress();
   
   // Step 2: Add 1-pixel inset
   tft.drawRect(1, 1, tft.width() - 2, tft.height() - 2, ST77XX_RED);
-  Serial.println("Step 2: Added red frame with 1-pixel inset");
-  Serial.println("Press any key to continue...");
+  SerialUSB.println("Step 2: Added red frame with 1-pixel inset");
+  SerialUSB.println("Press any key to continue...");
   waitForKeypress();
   
   // Step 3: Add 2-pixel inset
   tft.drawRect(2, 2, tft.width() - 4, tft.height() - 4, ST77XX_GREEN);
-  Serial.println("Step 3: Added green frame with 2-pixel inset");
-  Serial.println("Press any key to continue...");
+  SerialUSB.println("Step 3: Added green frame with 2-pixel inset");
+  SerialUSB.println("Press any key to continue...");
   waitForKeypress();
   
   // Step 4: Add 3-pixel inset
   tft.drawRect(3, 3, tft.width() - 6, tft.height() - 6, ST77XX_BLUE);
-  Serial.println("Step 4: Added blue frame with 3-pixel inset");
-  Serial.println("Examine which frames are fully visible to determine usable bounds.");
+  SerialUSB.println("Step 4: Added blue frame with 3-pixel inset");
+  SerialUSB.println("Examine which frames are fully visible to determine usable bounds.");
 }
 
 void drawOriginToCenterLine() {
@@ -207,64 +356,64 @@ void drawOriginToCenterLine() {
   tft.drawPixel(centerX, centerY-1, ST77XX_RED);
   tft.drawPixel(centerX, centerY+1, ST77XX_RED);
   
-  Serial.println("Origin-to-center test:");
-  Serial.println("  Origin (0,0): White pixels");
-  Serial.println("  Blue lines: X and Y axes from origin");
-  Serial.println("  Yellow line: Origin to nominal center");
-  Serial.println("  Red cross: Nominal center at (" + String(centerX) + "," + String(centerY) + ")");
-  Serial.println("Check if origin and axes are visible.");
+  SerialUSB.println("Origin-to-center test:");
+  SerialUSB.println("  Origin (0,0): White pixels");
+  SerialUSB.println("  Blue lines: X and Y axes from origin");
+  SerialUSB.println("  Yellow line: Origin to nominal center");
+  SerialUSB.println("  Red cross: Nominal center at (" + String(centerX) + "," + String(centerY) + ")");
+  SerialUSB.println("Check if origin and axes are visible.");
 }
 
 void runCalibrationTest() {
-  Serial.println("Running complete calibration test...");
-  Serial.println("Press any key between each step to continue.");
-  Serial.println();
+  SerialUSB.println("Running complete calibration test...");
+  SerialUSB.println("Press any key between each step to continue.");
+  SerialUSB.println();
   
   // Step 1: Show info
-  Serial.println("=== STEP 1: Display Information ===");
+  SerialUSB.println("=== STEP 1: Display Information ===");
   showDisplayInfo();
-  Serial.println("Press any key to continue...");
+  SerialUSB.println("Press any key to continue...");
   waitForKeypress();
   
   // Step 2: Clear screen
-  Serial.println("=== STEP 2: Clear Screen Test ===");
+  SerialUSB.println("=== STEP 2: Clear Screen Test ===");
   clearScreen();
-  Serial.println("Press any key to continue...");
+  SerialUSB.println("Press any key to continue...");
   waitForKeypress();
   
   // Step 3: Test rotations
-  Serial.println("=== STEP 3: Rotation Test ===");
+  SerialUSB.println("=== STEP 3: Rotation Test ===");
   for (int rot = 0; rot < 4; rot++) {
-    Serial.println("Testing rotation " + String(rot) + "...");
+    SerialUSB.println("Testing rotation " + String(rot) + "...");
     setRotation(rot);
-    Serial.println("Press any key to continue to next rotation...");
+    SerialUSB.println("Press any key to continue to next rotation...");
     waitForKeypress();
   }
   
   // Step 4: Frame test
-  Serial.println("=== STEP 4: Frame Boundary Test ===");
+  SerialUSB.println("=== STEP 4: Frame Boundary Test ===");
   drawFrame();
   
   // Step 5: Center test
-  Serial.println("=== STEP 5: Usable Center Test ===");
+  SerialUSB.println("=== STEP 5: Usable Center Test ===");
   drawUsableCenter();
   
-  Serial.println();
-  Serial.println("=== CALIBRATION TEST COMPLETE ===");
-  Serial.println("Based on your observations, you can determine:");
-  Serial.println("  1. Which rotation works best for your setup");
-  Serial.println("  2. The actual usable origin coordinates");
-  Serial.println("  3. The actual usable display dimensions");
-  Serial.println("Use individual commands for fine-tuning.");
+  SerialUSB.println();
+  SerialUSB.println("=== CALIBRATION TEST COMPLETE ===");
+  SerialUSB.println("Based on your observations, you can determine:");
+  SerialUSB.println("  1. Which rotation works best for your setup");
+  SerialUSB.println("  2. The actual usable origin coordinates");
+  SerialUSB.println("  3. The actual usable display dimensions");
+  SerialUSB.println("Use individual commands for fine-tuning.");
 }
 
 void drawUsableCenter() {
   if (usableWidth == 0 || usableHeight == 0) {
-    Serial.println("Usable area not defined. Please set it first.");
-    Serial.println("Example: After determining usable area, manually set:");
-    Serial.println("  usableOriginX = 1; usableOriginY = 2;");
-    Serial.println("  usableWidth = 158; usableHeight = 126;");
-    Serial.println("Then call this function again.");
+    SerialUSB.println("Usable area not defined. Please set it first.");
+    SerialUSB.println("Example: After determining usable area, manually set:");
+    SerialUSB.println("  usableOriginX = 1; usableOriginY = 2;");
+    SerialUSB.println("  usableWidth = 158; usableHeight = 126;");
+    SerialUSB.println("Then call this function again.");
     
     // For demonstration, use common ST7735 values
     usableOriginX = 1;
@@ -272,7 +421,7 @@ void drawUsableCenter() {
     usableWidth = tft.width() - 2;
     usableHeight = tft.height() - 3;
     
-    Serial.println("Using estimated values for demonstration:");
+    SerialUSB.println("Using estimated values for demonstration:");
     showDisplayInfo();
   }
   
@@ -289,24 +438,24 @@ void drawUsableCenter() {
   // Draw usable area boundary
   tft.drawRect(usableOriginX, usableOriginY, usableWidth, usableHeight, ST77XX_GREEN);
   
-  Serial.println("Red cross drawn at usable center: (" + String(centerX) + "," + String(centerY) + ")");
-  Serial.println("Green rectangle shows usable area boundary.");
+  SerialUSB.println("Red cross drawn at usable center: (" + String(centerX) + "," + String(centerY) + ")");
+  SerialUSB.println("Green rectangle shows usable area boundary.");
 }
 
 void waitForKeypress() {
   // Clear any pending input
-  while (Serial.available()) {
-    Serial.read();
+  while (SerialUSB.available()) {
+    SerialUSB.read();
   }
   
   // Wait for any key
-  while (!Serial.available()) {
+  while (!SerialUSB.available()) {
     delay(50);
   }
   
   // Read the key (but don't process as command)
-  Serial.readString();
-  Serial.println();
+  SerialUSB.readString();
+  SerialUSB.println();
 }
 
 void setUsableBounds(int left, int right, int top, int bottom) {
@@ -315,17 +464,17 @@ void setUsableBounds(int left, int right, int top, int bottom) {
   usableWidth = right - left + 1;
   usableHeight = bottom - top + 1;
   
-  Serial.println("Usable bounds set:");
-  Serial.println("  Left: " + String(left) + ", Right: " + String(right));
-  Serial.println("  Top: " + String(top) + ", Bottom: " + String(bottom));
-  Serial.println("  Usable area: " + String(usableWidth) + "x" + String(usableHeight));
-  Serial.println("  Center: (" + String(left + usableWidth/2) + ", " + String(top + usableHeight/2) + ")");
+  SerialUSB.println("Usable bounds set:");
+  SerialUSB.println("  Left: " + String(left) + ", Right: " + String(right));
+  SerialUSB.println("  Top: " + String(top) + ", Bottom: " + String(bottom));
+  SerialUSB.println("  Usable area: " + String(usableWidth) + "x" + String(usableHeight));
+  SerialUSB.println("  Center: (" + String(left + usableWidth/2) + ", " + String(top + usableHeight/2) + ")");
 }
 
 void exportConfig() {
   if (usableWidth == 0 || usableHeight == 0) {
-    Serial.println("Error: Usable bounds not set. Use 'bounds' command first.");
-    Serial.println("Example: bounds 1,158,2,127");
+    SerialUSB.println("Error: Usable bounds not set. Use 'bounds' command first.");
+    SerialUSB.println("Example: bounds 1,158,2,127");
     return;
   }
   
@@ -340,38 +489,46 @@ void exportConfig() {
   int centerX = usableOriginX + usableWidth / 2;
   int centerY = usableOriginY + usableHeight / 2;
   
-  Serial.println();
-  Serial.println("========== BEGIN CONFIG FILE ==========");
-  Serial.println("# ST7735 Display Configuration");
-  Serial.println("# Format: TOML v1.0.0");
-  Serial.println("# Generated by cal_lcd.cpp");
-  Serial.println();
-  Serial.println("[device]");
-  Serial.println("name = \"DueLCD_NEW\"  # TODO: Change to unique device name");
-  Serial.println("manufacturer = \"Unknown\"  # TODO: Set manufacturer");
-  Serial.println("model = \"ST7735\"  # TODO: Set model");
-  Serial.println("published_resolution = [" + String(tft.width()) + ", " + String(tft.height()) + "]");
-  Serial.println();
-  Serial.println("[pinout]");
-  Serial.println("# Arduino Due pin assignments");
-  Serial.println("rst = " + String(TFT_RST));
-  Serial.println("dc = " + String(TFT_DC));
-  Serial.println("cs = " + String(TFT_CS));
-  Serial.println("bl = " + String(TFT_BL));
-  Serial.println();
-  Serial.println("[calibration]");
-  Serial.println("orientation = \"" + orientation + "\"");
-  Serial.println("# Usable area bounds (0-indexed, inclusive)");
-  Serial.println("left = " + String(usableOriginX));
-  Serial.println("right = " + String(usableOriginX + usableWidth - 1));
-  Serial.println("top = " + String(usableOriginY));
-  Serial.println("bottom = " + String(usableOriginY + usableHeight - 1));
-  Serial.println("# Calculated center point");
-  Serial.println("center = [" + String(centerX) + ", " + String(centerY) + "]");
-  Serial.println("=========== END CONFIG FILE ===========");
-  Serial.println();
-  Serial.println("Copy the text between BEGIN/END and save as <DeviceName>.config");
-  Serial.println("Then run: python3 generate_config_header.py --device <DeviceName>");
+  // Calculate right and bottom edges
+  int rightEdge = usableOriginX + usableWidth - 1;
+  int bottomEdge = usableOriginY + usableHeight - 1;
+  
+  SerialUSB.println();
+  SerialUSB.println("========== BEGIN CONFIG FILE ==========");
+  SerialUSB.println("# ST7735 Display Configuration - " + currentDisplayName);
+  SerialUSB.println("# Format: TOML v1.0.0");
+  SerialUSB.println("# Generated by cal_lcd.cpp v2.0");
+  SerialUSB.println();
+  SerialUSB.println("[device]");
+  SerialUSB.println("name = \"" + currentDisplayName + "\"");
+  SerialUSB.println("manufacturer = \"Unknown\"  # TODO: Set manufacturer");
+  SerialUSB.println("model = \"Generic ST7735\"  # TODO: Set model");
+  SerialUSB.println("published_resolution = [" + String(PUBLISHED_WIDTH) + ", " + String(PUBLISHED_HEIGHT) + "]");
+  SerialUSB.println();
+  SerialUSB.println("[pinout]");
+  SerialUSB.println("# Arduino Due pin assignments");
+  SerialUSB.println("rst = " + String(TFT_RST));
+  SerialUSB.println("dc = " + String(TFT_DC));
+  SerialUSB.println("cs = " + String(TFT_CS));
+  SerialUSB.println("bl = " + String(TFT_BL));
+  SerialUSB.println();
+  SerialUSB.println("[calibration]");
+  SerialUSB.println("orientation = \"" + orientation + "\"");
+  SerialUSB.println("# Usable area bounds (0-indexed, inclusive)");
+  SerialUSB.println("left = " + String(usableOriginX));
+  SerialUSB.println("right = " + String(rightEdge));
+  SerialUSB.println("top = " + String(usableOriginY));
+  SerialUSB.println("bottom = " + String(bottomEdge));
+  SerialUSB.println("# Calculated center point");
+  SerialUSB.println("center = [" + String(centerX) + ", " + String(centerY) + "]");
+  SerialUSB.println("=========== END CONFIG FILE ===========");
+  SerialUSB.println();
+  SerialUSB.println("SAVE INSTRUCTIONS:");
+  SerialUSB.println("1. Copy the text between BEGIN/END markers");
+  SerialUSB.println("2. Save as: " + currentDisplayName + ".config");
+  SerialUSB.println("3. Place in project root directory");
+  SerialUSB.println("4. Run: python3 generate_config_header.py --device " + currentDisplayName);
+  SerialUSB.println();
 }
 
 void processCommand(String command) {
@@ -414,8 +571,8 @@ void processCommand(String command) {
       int bottom = params.substring(commaPos3 + 1).toInt();
       setUsableBounds(left, right, top, bottom);
     } else {
-      Serial.println("Error: Invalid bounds format. Use: bounds L,R,T,B");
-      Serial.println("Example: bounds 1,158,2,127");
+      SerialUSB.println("Error: Invalid bounds format. Use: bounds L,R,T,B");
+      SerialUSB.println("Example: bounds 1,158,2,127");
     }
   } else if (commandLower == "export") {
     exportConfig();
@@ -426,8 +583,8 @@ void processCommand(String command) {
     showHelp();
     showHelpAfter = false;  // Already showed help
   } else if (command.length() > 0) {
-    Serial.println("Unknown command: " + command);
-    Serial.println("Type 'help' for available commands.");
+    SerialUSB.println("Unknown command: " + command);
+    SerialUSB.println("Type 'help' for available commands.");
     showHelpAfter = false;
   } else {
     showHelpAfter = false;  // Empty command, don't show help
@@ -435,16 +592,577 @@ void processCommand(String command) {
   
   // Show help menu after command completion (except for test and help commands)
   if (showHelpAfter) {
-    Serial.println();
-    Serial.println("--- Command completed. Available commands: ---");
+    SerialUSB.println();
+    SerialUSB.println("--- Command completed. Available commands: ---");
     showHelp();
   }
 }
 
+// ==================== New Arrow Key Control Functions ====================
+
+void initializeBoundsFromPublished() {
+  // Initialize bounds based on published dimensions and current rotation
+  // This provides a reasonable starting point for calibration
+  
+  if (currentRotation == 1 || currentRotation == 3) {
+    // Landscape orientations - use published width x height
+    usableOriginX = 0;
+    usableOriginY = 0;
+    usableWidth = PUBLISHED_WIDTH;
+    usableHeight = PUBLISHED_HEIGHT;
+  } else {
+    // Portrait orientations - swap dimensions
+    usableOriginX = 0;
+    usableOriginY = 0;
+    usableWidth = PUBLISHED_HEIGHT;
+    usableHeight = PUBLISHED_WIDTH;
+  }
+  
+  SerialUSB.println("Initial bounds set from published dimensions:");
+  SerialUSB.println("  Origin: (" + String(usableOriginX) + ", " + String(usableOriginY) + ")");
+  SerialUSB.println("  Size: " + String(usableWidth) + " x " + String(usableHeight));
+  SerialUSB.println("  Use arrow keys in Mode 1 to fine-tune edges");
+}
+
+void markModified() {
+  hasUnsavedChanges = true;
+}
+
+void handleEscapeKey() {
+  // ESC key behavior depends on current mode:
+  // - Modes 1-4 (adjustment modes): Exit mode back to no-mode state
+  // - No active mode: Initiate save & exit sequence
+  // - Modes 5-6 are handled within their own functions (cancel operation)
+  
+  if (currentMode >= MODE_EDGE_ADJUST && currentMode <= MODE_ROTATION) {
+    // In adjustment modes 1-4: exit the mode
+    SerialUSB.println();
+    SerialUSB.println("Exiting mode. Press 1-6 to select a new mode, or ESC to save & exit.");
+    currentMode = MODE_NONE;  // Back to no-mode state
+  } else if (currentMode == MODE_NONE) {
+    // Not in an adjustment mode: trigger save & exit sequence
+    SerialUSB.println();
+    SerialUSB.println("ESC pressed - initiating save & exit sequence...");
+    saveAndExit();
+  }
+  // MODE_SAVE_EXIT and MODE_EXIT_NO_SAVE handle ESC internally via checkUnsavedChanges()
+}
+
+void showModePrompt() {
+  SerialUSB.println();
+  SerialUSB.println("========== MODE SELECTION ==========");
+  SerialUSB.println("1. Adjust Frame Edges (arrow keys move frame inward/outward)");
+  SerialUSB.println("2. Move Entire Frame (arrow keys shift whole frame)");
+  SerialUSB.println("3. Adjust Frame Thickness (up/down = thicker/thinner, 1-5px)");
+  SerialUSB.println("4. Rotate Display (left/right = rotate CCW/CW)");
+  SerialUSB.println("5. Save & Exit (save calibration to .config)");
+  SerialUSB.println("6. Exit Without Saving");
+  SerialUSB.println();
+  SerialUSB.print("Current Mode: ");
+  switch(currentMode) {
+    case MODE_EDGE_ADJUST: SerialUSB.println("1 - Edge Adjust"); break;
+    case MODE_FRAME_MOVE: SerialUSB.println("2 - Frame Move"); break;
+    case MODE_THICKNESS: SerialUSB.println("3 - Thickness"); break;
+    case MODE_ROTATION: SerialUSB.println("4 - Rotation"); break;
+    case MODE_SAVE_EXIT: SerialUSB.println("5 - Save & Exit"); break;
+    case MODE_EXIT_NO_SAVE: SerialUSB.println("6 - Exit Without Save"); break;
+  }
+  SerialUSB.println();
+  SerialUSB.println("Press 1-6 to select mode, arrow keys to adjust.");
+  SerialUSB.println("====================================");
+}
+
+void setMode(int mode) {
+  if (mode >= 1 && mode <= 6) {
+    currentMode = (CalibrationMode)(mode - 1);
+    
+    // Modes 5 and 6 are actions, not adjustment modes
+    if (currentMode == MODE_SAVE_EXIT) {
+      saveAndExit();
+    } else if (currentMode == MODE_EXIT_NO_SAVE) {
+      exitWithoutSaving();
+    } else {
+      // For adjustment modes (1-4), show the mode prompt
+      showModePrompt();
+    }
+  }
+}
+
+bool checkUnsavedChanges() {
+  if (!hasUnsavedChanges) {
+    return false;
+  }
+  
+  SerialUSB.println();
+  SerialUSB.println("WARNING: You have unsaved changes!");
+  SerialUSB.println("Press 'y' to continue without saving, ESC to cancel, or any other key to cancel.");
+  
+  while (!SerialUSB.available()) {
+    delay(10);
+  }
+  
+  char response = SerialUSB.read();
+  while (SerialUSB.available()) SerialUSB.read(); // Clear buffer
+  
+  // ESC (27) or other keys cancel, only 'y' continues
+  if (response == 27) {  // ESC key
+    SerialUSB.println("Operation cancelled.");
+    return false;
+  }
+  
+  return (response == 'y' || response == 'Y');
+}
+
+void saveAndExit() {
+  exportConfig();
+  hasUnsavedChanges = false;
+  hasEverSaved = true;
+  lastSavedState.usableOriginX = usableOriginX;
+  lastSavedState.usableOriginY = usableOriginY;
+  lastSavedState.usableWidth = usableWidth;
+  lastSavedState.usableHeight = usableHeight;
+  lastSavedState.rotation = currentRotation;
+  lastSavedState.frameThickness = frameThickness;
+  
+  SerialUSB.println();
+  SerialUSB.println("Calibration saved. You can now close this tool.");
+  SerialUSB.println("(Or press any key to continue calibrating)");
+}
+
+void exitWithoutSaving() {
+  if (hasUnsavedChanges && !checkUnsavedChanges()) {
+    SerialUSB.println("Exit cancelled. Returning to calibration.");
+    currentMode = MODE_NONE;  // Reset to no mode
+    return;
+  }
+  
+  SerialUSB.println();
+  SerialUSB.println("Exiting without saving. Goodbye!");
+  SerialUSB.println("(Reset board or press reset button to restart)");
+  while(true) {
+    delay(1000); // Halt execution
+  }
+}
+
+bool validateAndClampBounds() {
+  // Comprehensive bounds validation to prevent off-screen drawing
+  // Returns true if bounds were modified, false if already valid
+  
+  int maxX = tft.width();
+  int maxY = tft.height();
+  bool modified = false;
+  
+  // Clamp origin to valid range
+  if (usableOriginX < 0) {
+    usableOriginX = 0;
+    modified = true;
+  }
+  if (usableOriginY < 0) {
+    usableOriginY = 0;
+    modified = true;
+  }
+  
+  // Ensure origin doesn't exceed display bounds
+  if (usableOriginX >= maxX) {
+    usableOriginX = maxX - 1;
+    modified = true;
+  }
+  if (usableOriginY >= maxY) {
+    usableOriginY = maxY - 1;
+    modified = true;
+  }
+  
+  // Clamp width and height to prevent exceeding display bounds
+  int maxAllowedWidth = maxX - usableOriginX;
+  int maxAllowedHeight = maxY - usableOriginY;
+  
+  if (usableWidth > maxAllowedWidth) {
+    usableWidth = maxAllowedWidth;
+    modified = true;
+  }
+  if (usableHeight > maxAllowedHeight) {
+    usableHeight = maxAllowedHeight;
+    modified = true;
+  }
+  
+  // Ensure minimum size
+  if (usableWidth < 10) {
+    usableWidth = 10;
+    modified = true;
+  }
+  if (usableHeight < 10) {
+    usableHeight = 10;
+    modified = true;
+  }
+  
+  // Final safety check: ensure total bounds don't exceed display
+  if (usableOriginX + usableWidth > maxX) {
+    usableWidth = maxX - usableOriginX;
+    modified = true;
+  }
+  if (usableOriginY + usableHeight > maxY) {
+    usableHeight = maxY - usableOriginY;
+    modified = true;
+  }
+  
+  if (modified) {
+    SerialUSB.println("WARNING: Bounds clamped to valid range");
+    SerialUSB.print("  Valid area: ");
+    SerialUSB.print(usableOriginX);
+    SerialUSB.print(",");
+    SerialUSB.print(usableOriginY);
+    SerialUSB.print(" ");
+    SerialUSB.print(usableWidth);
+    SerialUSB.print("x");
+    SerialUSB.println(usableHeight);
+  }
+  
+  return modified;
+}
+
+void redrawFrame() {
+  // Validate bounds before drawing
+  validateAndClampBounds();
+  clearScreen();
+  drawFrame();
+}
+
+void adjustEdge(char direction) {
+  // Guard: need initial bounds set
+  if (usableWidth == 0 || usableHeight == 0) {
+    SerialUSB.println("ERROR: Set initial bounds first using 'bounds L,R,T,B' or 'frame' command");
+    return;
+  }
+  
+  int step = 1;
+  bool changed = false;
+  int maxX = tft.width();
+  int maxY = tft.height();
+  
+  switch(direction) {
+    case 'U': // Up arrow - decrease top edge (expand upward)
+      if (usableOriginY > 0 && (usableOriginY - step) >= 0) {
+        usableOriginY -= step;
+        usableHeight += step;
+        // Ensure total doesn't exceed display height
+        if (usableOriginY + usableHeight > maxY) {
+          usableHeight = maxY - usableOriginY;
+        }
+        changed = true;
+      }
+      break;
+    case 'D': // Down arrow - increase top edge (contract from top)
+      if (usableHeight > 10 && usableOriginY + step < maxY) {
+        usableOriginY += step;
+        usableHeight -= step;
+        changed = true;
+      }
+      break;
+    case 'L': // Left arrow - decrease left edge (expand leftward)
+      if (usableOriginX > 0 && (usableOriginX - step) >= 0) {
+        usableOriginX -= step;
+        usableWidth += step;
+        // Ensure total doesn't exceed display width
+        if (usableOriginX + usableWidth > maxX) {
+          usableWidth = maxX - usableOriginX;
+        }
+        changed = true;
+      }
+      break;
+    case 'R': // Right arrow - increase left edge (contract from left)
+      if (usableWidth > 10 && usableOriginX + step < maxX) {
+        usableOriginX += step;
+        usableWidth -= step;
+        changed = true;
+      }
+      break;
+  }
+  
+  if (changed) {
+    // Validate and clamp bounds after adjustment
+    validateAndClampBounds();
+    markModified();
+    redrawFrame();
+    SerialUSB.print("Edge adjusted. Usable: ");
+    SerialUSB.print(usableOriginX);
+    SerialUSB.print(",");
+    SerialUSB.print(usableOriginY);
+    SerialUSB.print(" ");
+    SerialUSB.print(usableWidth);
+    SerialUSB.print("x");
+    SerialUSB.println(usableHeight);
+  }
+}
+
+void moveFrame(char direction) {
+  // Guard: need initial bounds set
+  if (usableWidth == 0 || usableHeight == 0) {
+    SerialUSB.println("ERROR: Set initial bounds first using 'bounds L,R,T,B' or 'frame' command");
+    return;
+  }
+  
+  int step = 1;
+  int maxX = tft.width();
+  int maxY = tft.height();
+  bool changed = false;
+  
+  switch(direction) {
+    case 'U': // Up
+      if (usableOriginY > 0) {
+        usableOriginY -= step;
+        changed = true;
+      }
+      break;
+    case 'D': // Down
+      if (usableOriginY + usableHeight < maxY) {
+        usableOriginY += step;
+        changed = true;
+      }
+      break;
+    case 'L': // Left
+      if (usableOriginX > 0) {
+        usableOriginX -= step;
+        changed = true;
+      }
+      break;
+    case 'R': // Right
+      if (usableOriginX + usableWidth < maxX) {
+        usableOriginX += step;
+        changed = true;
+      }
+      break;
+  }
+  
+  if (changed) {
+    // Validate and clamp bounds after move
+    validateAndClampBounds();
+    markModified();
+    redrawFrame();
+    SerialUSB.print("Frame moved. Origin: (");
+    SerialUSB.print(usableOriginX);
+    SerialUSB.print(",");
+    SerialUSB.print(usableOriginY);
+    SerialUSB.println(")");
+  }
+}
+
+void adjustThickness(char direction) {
+  bool changed = false;
+  
+  if (direction == 'U' && frameThickness < 5) {
+    frameThickness++;
+    changed = true;
+  } else if (direction == 'D' && frameThickness > 1) {
+    frameThickness--;
+    changed = true;
+  }
+  
+  if (changed) {
+    markModified();
+    redrawFrame();
+    SerialUSB.print("Thickness: ");
+    SerialUSB.println(frameThickness);
+  }
+}
+
+void rotateDisplay(char direction) {
+  if (direction == 'L') {
+    currentRotation = (currentRotation + 3) % 4; // CCW
+  } else if (direction == 'R') {
+    currentRotation = (currentRotation + 1) % 4; // CW
+  }
+  
+  setRotation(currentRotation);
+  markModified();
+  SerialUSB.print("Rotation: ");
+  SerialUSB.println(currentRotation);
+}
+
+void handleArrowKey(char key) {
+  switch(currentMode) {
+    case MODE_EDGE_ADJUST:
+      adjustEdge(key);
+      break;
+    case MODE_FRAME_MOVE:
+      moveFrame(key);
+      break;
+    case MODE_THICKNESS:
+      adjustThickness(key);
+      break;
+    case MODE_ROTATION:
+      rotateDisplay(key);
+      break;
+    case MODE_SAVE_EXIT:
+    case MODE_EXIT_NO_SAVE:
+      // These modes don't use arrow keys - ignore
+      SerialUSB.println("Arrow keys not used in this mode. Press 1-4 to select adjustment mode.");
+      break;
+  }
+}
+
+// ==================== End Arrow Key Functions ====================
+
+// ==================== Display Selection and Config Creation ====================
+
+String readSerialLine() {
+  // Read a line from serial, waiting for newline
+  String input = "";
+  while (true) {
+    while (!SerialUSB.available()) {
+      delay(10);
+    }
+    char c = SerialUSB.read();
+    if (c == '\n' || c == '\r') {
+      if (input.length() > 0) {
+        return input;
+      }
+    } else if (c >= 32 && c <= 126) {  // Printable characters
+      input += c;
+      SerialUSB.print(c);  // Echo
+    } else if (c == 8 || c == 127) {  // Backspace
+      if (input.length() > 0) {
+        input.remove(input.length() - 1);
+        SerialUSB.print("\b \b");  // Erase character
+      }
+    }
+  }
+}
+
+void createNewDisplayConfig() {
+  SerialUSB.println();
+  SerialUSB.println("========== CREATE NEW DISPLAY CONFIG ==========");
+  SerialUSB.println();
+  SerialUSB.println("This will guide you through creating a new .config file.");
+  SerialUSB.println("After calibration, you'll need to copy the generated config");
+  SerialUSB.println("to a file named <DisplayName>.config in the project root.");
+  SerialUSB.println();
+  
+  // Get display name
+  SerialUSB.print("Enter display name (e.g., DueLCD03): ");
+  currentDisplayName = readSerialLine();
+  SerialUSB.println();
+  
+  if (currentDisplayName.length() == 0) {
+    SerialUSB.println("ERROR: Display name cannot be empty!");
+    SerialUSB.println("Calibration tool cannot proceed without a display name.");
+    SerialUSB.println("Please reset and try again.");
+    while(true) { delay(1000); }  // Halt
+  }
+  
+  SerialUSB.println("Display name set to: " + currentDisplayName);
+  SerialUSB.println();
+  SerialUSB.println("Note: Initial bounds will be set from published dimensions.");
+  SerialUSB.println("      Use calibration modes to fine-tune the display edges.");
+  SerialUSB.println();
+  
+  configExists = true;  // Mark as ready to calibrate
+}
+
+void selectOrCreateDisplay() {
+  SerialUSB.println("========== DISPLAY SELECTION ==========");
+  SerialUSB.println();
+  SerialUSB.println("IMPORTANT: This calibration tool requires a display configuration.");
+  SerialUSB.println();
+  SerialUSB.println("Since this tool runs on the Arduino Due, it cannot read .config");
+  SerialUSB.println("files from your computer. You must specify which display you are");
+  SerialUSB.println("calibrating.");
+  SerialUSB.println();
+  SerialUSB.println("Available options:");
+  SerialUSB.println("  1. Calibrate existing display (enter name manually)");
+  SerialUSB.println("  2. Create new display configuration");
+  SerialUSB.println("  3. Exit calibration tool");
+  SerialUSB.println();
+  SerialUSB.print("Select option (1-3): ");
+  
+  String choice = readSerialLine();
+  SerialUSB.println();
+  
+  if (choice == "1") {
+    SerialUSB.print("Enter display name to calibrate (e.g., DueLCD01): ");
+    currentDisplayName = readSerialLine();
+    SerialUSB.println();
+    
+    if (currentDisplayName.length() == 0) {
+      SerialUSB.println("ERROR: Display name cannot be empty!");
+      SerialUSB.println("Calibration tool cannot proceed. Please reset and try again.");
+      while(true) { delay(1000); }  // Halt
+    }
+    
+    SerialUSB.println("Calibrating display: " + currentDisplayName);
+    SerialUSB.println("Note: Ensure " + currentDisplayName + ".config exists on your computer");
+    SerialUSB.println("      or create it after calibration using the exported data.");
+    configExists = true;
+    
+  } else if (choice == "2") {
+    createNewDisplayConfig();
+    
+  } else if (choice == "3") {
+    SerialUSB.println("Exiting calibration tool.");
+    SerialUSB.println("Please reset the Arduino to restart.");
+    while(true) { delay(1000); }  // Halt
+    
+  } else {
+    SerialUSB.println("Invalid choice. Please reset and select 1, 2, or 3.");
+    while(true) { delay(1000); }  // Halt
+  }
+  
+  SerialUSB.println();
+  SerialUSB.println("======================================");
+}
+
+// ==================== End Display Selection ====================
+
 void loop() {
-  if (Serial.available()) {
-    String command = Serial.readStringUntil('\n');
-    processCommand(command);
+  if (SerialUSB.available()) {
+    char c = SerialUSB.read();
+    
+    // Check for Ctrl-C (ASCII 3)
+    if (c == 3) {
+      SerialUSB.println();
+      SerialUSB.println("Ctrl-C detected - initiating save & exit sequence...");
+      saveAndExit();
+      return;
+    }
+    
+    // Check for ESC key or ANSI escape sequence (arrow keys)
+    if (c == 27) { // ESC character
+      delay(10); // Wait to see if it's an arrow key sequence
+      if (SerialUSB.available() && SerialUSB.peek() == '[') {
+        // This is an arrow key sequence
+        SerialUSB.read(); // consume '['
+        if (SerialUSB.available()) {
+          char arrowCode = SerialUSB.read();
+          char direction;
+          
+          switch(arrowCode) {
+            case 'A': direction = 'U'; break; // Up
+            case 'B': direction = 'D'; break; // Down
+            case 'C': direction = 'R'; break; // Right
+            case 'D': direction = 'L'; break; // Left
+            default: return; // Unknown sequence
+          }
+          
+          handleArrowKey(direction);
+        }
+      } else {
+        // Plain ESC key (not followed by '[')
+        handleEscapeKey();
+      }
+      return;
+    }
+    // Check for mode selection (1-6)
+    else if (c >= '1' && c <= '6') {
+      setMode(c - '0');
+    }
+    // Check for newline (legacy command mode)
+    else if (c == '\n' || c == '\r') {
+      // Ignore empty newlines
+    }
+    // Handle text commands (for backwards compatibility)
+    else {
+      String command = String(c) + SerialUSB.readStringUntil('\n');
+      processCommand(command);
+    }
   }
   
   delay(10);  // Small delay

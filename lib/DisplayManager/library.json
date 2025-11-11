@@ -1,0 +1,45 @@
+{
+  "name": "DisplayManager",
+  "version": "3.0.0",
+  "description": "Multi-display management library for ST7735 LCD displays. Handles initialization, test patterns, and runtime display selection for up to 8 displays simultaneously.",
+  "keywords": [
+    "ST7735",
+    "TFT",
+    "LCD",
+    "display",
+    "multi-display",
+    "graphics",
+    "Arduino Due"
+  ],
+  "authors": [
+    {
+      "name": "grusboyd",
+      "maintainer": true
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/grusboyd/ST7735-Display-Project.git"
+  },
+  "license": "MIT",
+  "frameworks": "arduino",
+  "platforms": "sam",
+  "dependencies": [
+    {
+      "owner": "adafruit",
+      "name": "Adafruit ST7735 and ST7789 Library",
+      "version": "^1.10.0"
+    },
+    {
+      "owner": "adafruit",
+      "name": "Adafruit GFX Library",
+      "version": "^1.11.0"
+    }
+  ],
+  "export": {
+    "include": [
+      "DisplayManager.h",
+      "DisplayManager.cpp"
+    ]
+  }
+}

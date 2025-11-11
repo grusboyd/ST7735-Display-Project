@@ -2,6 +2,13 @@
 
 ## Mandatory Workflow Requirements
 
+### 0. Design-First Policy - **CRITICAL REQUIREMENT**
+- **ALWAYS** create a Jupyter Notebook for design/planning BEFORE writing any code
+- Notebook must be named: `design_[feature-name].ipynb`
+- **NEVER** skip the design notebook step, even for "quick fixes"
+- Incomplete planning leads to inefficient iteration and rework
+- See "Design Notebook Template" section below for required structure
+
 ### 1. Backup Policy
 - **ALWAYS** create a timestamped backup before making ANY modifications to code files
 - Use format: `filename.backup_description_YYYYMMDD_HHMMSS`
@@ -55,15 +62,58 @@
 
 ## Workflow Steps
 
-1. **Assessment**: Check current state and identify what needs to be done
-2. **Backup**: Create timestamped backup of current state  
-3. **Options**: If multiple approaches exist, present options to user
-4. **Selection**: Wait for user to choose which option to implement
-5. **Permission**: Confirm scope and get explicit approval
-6. **Implementation**: Make only the requested changes
-7. **Verification**: Test and validate the changes
+1. **Design Notebook**: Create Jupyter Notebook with complete design/plan
+2. **Review**: Ensure all notebook sections are complete
+3. **Assessment**: Check current state and identify what needs to be done
+4. **Backup**: Create timestamped backup of current state  
+5. **Options**: If multiple approaches exist, present options to user
+6. **Selection**: Wait for user to choose which option to implement
+7. **Permission**: Confirm scope and get explicit approval
+8. **Implementation**: Make only the requested changes following notebook plan
+9. **Verification**: Test and validate the changes
+10. **Update**: Document deviations in notebook and lessons learned
+
+## Design Notebook Template
+
+Every feature/module must have a design notebook with these sections:
+
+### 1. Problem Statement
+- What are we solving?
+- User requirements
+- Pain points
+
+### 2. Current State Analysis  
+- What exists now?
+- Files/modules affected
+- Current limitations
+
+### 3. Technical Design
+- Architecture overview
+- Data structures
+- API/Interface design
+- State management
+- Error handling
+
+### 4. Implementation Plan
+- Step-by-step tasks
+- Dependencies
+- Files to modify/create
+- Complexity estimates
+
+### 5. Test Strategy
+- Test cases
+- Edge cases
+- Expected outcomes
+
+### 6. Risk Assessment
+- Potential issues
+- Breaking changes
+- Performance impacts
 
 ## Violation Examples to Avoid
+
+- ❌ Writing code without design notebook
+- ❌ Incomplete design notebook sections
 
 - ❌ Implementing solution without presenting options
 - ❌ Adding content/features not requested (like Display 2 custom graphics)

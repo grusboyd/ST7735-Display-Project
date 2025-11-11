@@ -7,6 +7,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2025-11-08
+
+### Added - Multi-Display Architecture
+- **DisplayManager Library**: Centralized display management with runtime display selection
+  - Supports up to 8 displays with independent configurations
+  - Dynamic display registration by name (no recompilation required)
+  - Built-in test patterns: horizontal gradient with calibration frame and device info
+  - Comprehensive validation: pin conflicts, duplicate names, dimension checks
+  - Library metadata: `lib/DisplayManager/library.json` with dependencies
+
+- **SerialProtocol Library**: Robust bitmap transmission protocol with error recovery
+  - State machine: DISPLAY selection → BMPStart → SIZE → pixel data → BMPEnd → COMPLETE
+  - Multi-display support: `DISPLAY:<name>` command selects active display
+  - Automatic error recovery: timeout detection with state reset (15s timeout)
+  - Manual reset command: `RESET` command for user-initiated recovery
+  - Progress reporting: pixel count updates every 10 rows
+  - Comprehensive validation: dimension limits (1000x1000 max), active display checks
+  - Library metadata: `lib/SerialProtocol/library.json` with dependencies
+
+- **Enhanced Error Recovery**:
+  - Automatic timeout recovery: calls `reset()` and updates activity timer
+  - Manual recovery: `RESET` command available during display selection
+  - Serial notifications: "Protocol reset requested", "Timeout - resetting protocol"
+  - Clean state restoration: clears display selection, bitmap data, offsets
+
+- **Code Quality Improvements**:
+  - Constants extracted: `TIMEOUT_MS=15000`, `DISPLAY_SELECT_TIMEOUT=3000`, `READY_TIMEOUT=5000`, `MAX_DIMENSION=1000`, `PROGRESS_REPORT_INTERVAL=10`
+  - Input validation: pin conflict detection, duplicate name checking, dimension limits
+  - Const correctness: gradient optimization with precomputed values, explicit float suffixes
+  - Error handling: active display validation, dimension checks, timeout handling
+
+- **Test Pattern Enhancement**:
+  - Horizontal gradient: smooth blue-to-red transition across display width
+  - Calibration frame: white border showing usable area boundaries
+  - Device information: display name, resolution, orientation in black text (improved readability)
+  - Gradient optimization: precomputed `widthInv` constant, const correctness
+
+### Changed
+- **Architecture**: Refactored from single-display to multi-display modular design
+  - **v2.1.0**: 379 lines in main.cpp (monolithic)
+  - **v3.0.0**: 85 lines in main.cpp (78% code reduction)
+  - Functionality moved to reusable libraries (DisplayManager + SerialProtocol)
+
+- **main.cpp**: Simplified to minimal initialization and loop
+  - Initialize SPI bus
+  - Register displays with DisplayManager
+  - Initialize all displays and show test patterns
+  - Create SerialProtocol instance
+  - Loop: process protocol and check timeouts
+
+- **Protocol Flow**: Enhanced for multi-display support
+  1. Wait for `DISPLAY:<name>` selection
+  2. Respond with `DISPLAY_READY:<name>`
+  3. Wait for `BMPStart` marker
+  4. Wait for `SIZE:width,height` command
+  5. Clear display and respond with `READY`
+  6. Receive pixel data (RGB565 format)
+  7. Wait for `BMPEnd` marker
+  8. Transition to `BITMAP_COMPLETE` state
+  9. Ready for next bitmap (same display or new selection)
+
+- **Display Selection**: Runtime selection eliminates recompilation
+  - Old workflow: Regenerate header → rebuild → upload for each display
+  - New workflow: Single firmware, select display via serial command
+  - Supports switching between displays without rebuilding
+
+### Technical Improvements
+- **Memory Efficiency**: Modular libraries reduce code duplication
+- **Maintainability**: Clear separation of concerns (display management vs protocol)
+- **Extensibility**: Easy to add new displays without modifying core code
+- **Reliability**: Automatic recovery from timeouts and protocol errors
+- **Performance**: Optimized gradient rendering with const correctness
+
+### Testing
+- ✅ DueLCD01 tested successfully with tiger.png (158×126 landscape)
+- ✅ Test pattern displays correctly with black text on gradient
+- ✅ Display clears properly before new images
+- ✅ Protocol handles timeouts with automatic reset
+- ✅ Manual RESET command triggers clean recovery
+
+### Build Status
+- Arduino Due platform
+- RAM: 3.3% (varies by active features)
+- Flash: ~12% (varies by configuration)
+- Clean compilation: No warnings
+
+### Developer Notes
+- Library structure follows PlatformIO standards
+- Dependencies properly declared in library.json files
+- Test patterns useful for calibration verification
+- Error recovery tested with timeout and manual reset scenarios
+- Protocol messages visible via SerialUSB for debugging
+
+### Files Added
+- `lib/DisplayManager/DisplayManager.h` (91 lines)
+- `lib/DisplayManager/DisplayManager.cpp` (251 lines)
+- `lib/DisplayManager/library.json` (metadata)
+- `lib/SerialProtocol/SerialProtocol.h` (91 lines)
+- `lib/SerialProtocol/SerialProtocol.cpp` (370 lines)
+- `lib/SerialProtocol/library.json` (metadata)
+
+### Files Modified
+- `src/main.cpp` - Reduced from 379 to 85 lines (78% reduction)
+
+### Migration from v2.1.0
+- v2.1.0 modular config system (TOML files, header generation) remains functional
+- v3.0.0 adds multi-display runtime selection on top of existing config system
+- Both systems work together: config files define displays, runtime selection chooses active display
+
+## [2.1.0] - 2025-11-06
+
 ## [2.1.0] - 2025-11-06
 
 ### Added - Modular Configuration System
